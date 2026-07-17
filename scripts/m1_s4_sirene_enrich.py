@@ -53,11 +53,11 @@ except ImportError as e:
 PROJECT_ROOT    = Path(__file__).parent.parent
 API_BASE        = "https://recherche-entreprises.api.gouv.fr/search"
 BATCH_SIZE      = 500       # rows fetched from DB per batch
-MAX_CONCURRENT  = 5         # parallel API calls (safe under rate limit)
+MAX_CONCURRENT  = 2         # parallel API calls (2 is safe: API allows ~4 req/sec)
 REQUEST_TIMEOUT = 10        # seconds per request
 RETRY_ATTEMPTS  = 3         # retries on transient failures
-RETRY_BACKOFF   = 2.0       # seconds between retries (doubles each time)
-REQUEST_DELAY   = 0.2       # seconds between individual requests within semaphore
+RETRY_BACKOFF   = 3.0       # seconds between retries (doubles each time)
+REQUEST_DELAY   = 0.4       # seconds between individual requests within semaphore
 
 # INSEE legal form codes → human-readable labels
 NAF_LABEL_FALLBACK = {
@@ -197,9 +197,9 @@ def fetch_unenriched_batch(cur, limit_total: int | None, offset: int, batch_size
         WHERE siren IS NOT NULL
           AND sirene_last_checked_at IS NULL
         ORDER BY siren
-        LIMIT %s OFFSET %s
+        LIMIT %s
         """,
-        (effective_limit, offset),
+        (effective_limit,),
     )
     return cur.fetchall()
 
