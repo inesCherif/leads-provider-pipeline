@@ -696,9 +696,57 @@ Migration 007 adds `idx_companies_trade_name_trgm` to close this.
 
 ### 5.3 Duplicate Marking Applied (M1-S5b, 2026-07-19)
 
-`scripts/m1_s5b_dedup.py` + migrations 007/008. **4,274 companies marked as
-duplicates across 4,049 groups.** In the query view this collapses 98,979 company
-rows to **94,797 distinct businesses**.
+`scripts/m1_s5b_dedup.py` + migrations 007/008. **5,810 companies marked as
+duplicates** across two passes. In the query view this collapses 98,979 company
+rows to **93,284 distinct businesses**.
+
+| Pass | Method | Marked | What it catches |
+|------|--------|--------|-----------------|
+| 1 | `exact_name_postal` | 4,218 | Identical normalized name + postal |
+| 2 | `stripped_legal_form` | 1,592 | Same after removing EARL/GAEC/SARL/SCEA/GFA and the provider's trailing activity tag: `EARL DU VAL VERT` == `DU VAL VERT` |
+
+### The SIREN guard, and the bug it was written for
+
+**A row is only marked as a duplicate if its SIREN is NULL, or equals the
+survivor's.** Two rows with *different* non-null SIRENs are two separately
+registered legal entities and must never be collapsed, however identical the
+names look.
+
+This matters specifically in French agriculture, where one family routinely
+operates through several entities at one address:
+
+| Entity A | Entity B | Why they must stay separate |
+|----------|----------|------------------------------|
+| `444925549 ANTOINE CARDON` | `830687851 EARL ANTOINE CARDON` | Sole trader + his EARL |
+| `342450327 EARL DE LA CROIX BLANCHE` | `789799129 SCI DE LA CROIX BLANCHE` | Operating farm + land-holding company |
+| `979953213 GFA LE CHAMP BERNARD` | `344280573 LE CHAMP BERNARD` | Land holding + operating entity |
+
+**The first version of this script had no such guard and wrongly merged 56 rows**
+— including `SCEA DE LA BRUNE` under two different SIRENs (`316741412`,
+`504017724`) and `GAEC DES HORIZONS` under `423995182` / `423995000`. Caught by
+checking the applied result rather than trusting the pass, unmarked, and the guard
+added. The guard now blocks 56 rows in pass 1 and 146 in pass 2.
+
+> **Open nuance, not auto-decided**: those separate legal entities usually share a
+> decision-maker and an address. Legally distinct, commercially probably one
+> conversation. Whether a campaign should contact both is a business call.
+
+### Why a similarity threshold was rejected
+
+A trigram pass was measured first, at thresholds from 0.50 to 0.90. Inspecting
+actual pairs showed the true positives were almost never spelling variants — they
+were legal-form noise. And the low bands mixed real matches with clear errors:
+
+| Similarity | Example pair | Verdict |
+|-----------|--------------|---------|
+| 0.86 | `EURL PERIGORD VITELLUS DISTRIBUTION` / `PERIGORD VITELLUS DISTRIBUTION` | same |
+| 0.63 | `Earl Albert` / `Earl Albert - eleveur` | same |
+| 0.55 | `GAEC DE BEAULIEU` / `EARL DE BEAULIEU` | **different entities** |
+| 0.53 | `Vente a la ferme` / `Au lait de chevre Vente a la ferme` | **generic bucket, not a name** |
+
+No threshold cleanly separates those. Stripping legal forms and matching exactly
+is more precise than any cutoff, so pass 2 does that instead. Trigram matching
+remains unused.
 
 **Non-destructive by design.** Nothing is deleted or merged. A duplicate keeps all
 its data and gains `duplicate_of_company_id` pointing at its survivor;
@@ -995,15 +1043,14 @@ documented gaps.
 
 ### The headline result
 
-**94,797 distinct qualified businesses**, deduplicated (see 5.3). Split 39,701
-SIREN-verified (tier 1) and 61,944 label-qualified (tier 2) before dedup
-collapses 4,274 duplicate rows. **14,578 reachable emails** across 14,127
-businesses, and phone coverage on essentially all of them.
+**93,284 distinct qualified businesses**, deduplicated (see 5.3). Split 39,701
+SIREN-verified (tier 1) and 61,944 label-qualified (tier 2) before dedup collapses
+5,810 duplicate rows. **14,578 reachable emails** across 14,005 businesses, and
+phone coverage on essentially all of them.
 
-> Quote **94,797**, not the 101,645 raw row count. Count with
+> Quote **93,284**, not the 101,645 raw row count. Count with
 > `count(DISTINCT business_id)`. The real figure is slightly lower still: rows
-> without a postal code could not be duplicate-checked at all, and ~924 near-miss
-> spelling variants remain unmatched.
+> without a postal code cannot be duplicate-checked at all.
 
 The most consequential decision was tier 2. Following the original spec literally
 would have produced 39,701 qualified prospects and shelved 83,344 as `pending`.
@@ -1015,9 +1062,10 @@ between a 39k and a 101k deliverable.
 
 Honest limits, so nobody over-promises to the client:
 
-- **Dedup is now partial, not absent.** 4,274 exact-key duplicates are marked
-  (5.3), but ~924 near-miss spelling variants and every row without a postal code
-  remain unchecked. Count with `business_id`, and expect a small residue of
+- **Dedup is now partial, not absent.** 5,810 duplicates are marked across two
+  passes (5.3), but rows without a postal code cannot be checked at all, and
+  entities sharing a decision-maker under different SIRENs are deliberately left
+  separate. Count with `business_id`, and expect a small residue of
   double-contacts.
 - **No email is verified.** All 25,506 are `candidate`. Verification is deliberately
   deferred to send time.

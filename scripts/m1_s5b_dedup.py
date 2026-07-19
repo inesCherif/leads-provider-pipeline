@@ -7,41 +7,59 @@ links each duplicate to a chosen survivor.
 NON-DESTRUCTIVE. No row is deleted and no data is merged or overwritten. A
 duplicate keeps everything it has and gains a pointer:
     duplicate_of_company_id -> the survivor
-Deduplication then happens in the views via coalesce(duplicate_of_company_id, id).
-Undo the whole pass with:
-    UPDATE staging.companies SET duplicate_of_company_id = NULL, dedup_checked_at = NULL;
+Deduplication then happens in the views via coalesce(duplicate_of_company_id, id),
+exposed as business_id. Undo the whole thing with:
+    UPDATE staging.companies
+       SET duplicate_of_company_id = NULL, dedup_method = NULL, dedup_checked_at = NULL;
 
 WHY THIS EXISTS
 M1-S3 deduplicated on SIRET only. A farm present in both source files - once with
-a SIRET, once without - became two rows that never merged. Measured: 4,365
-duplicates across the qualified set, 2,990 groups spanning both qualification
-tiers. See docs/project_documentation.md section 5.2.
+a SIRET, once without - became two rows that never merged.
+See docs/project_documentation.md sections 5.2 and 5.3.
 
-THE MATCHING KEY
-Normalized name + postal code, where "normalized" means: unaccent, lowercase,
-strip punctuation to spaces, then SORT the word tokens. Sorting is what collapses
-"Lemoine Jean-Claude" and "JEAN-CLAUDE LEMOINE" - this data provider routinely
-reverses first/last name order between files.
+TWO PASSES, most confident first. Each row records which method matched it in
+dedup_method, so a later pass can be re-evaluated without redoing the earlier one.
 
-Phone is deliberately NOT used. An earlier attempt keyed on phone and produced a
-12.5% duplicate rate that was wrong: numbers like +33890212903 and +33899105777
-are French premium-rate service lines (0890/0899) shared across five different
-departments. Phone is not an identity key in this dataset.
+  1. exact_name_postal   normalized name + postal code, exact.
+  2. stripped_legal_form same, but with French legal forms (EARL, GAEC, SARL,
+                         SCEA, GFA...) and the provider's trailing activity tag
+                         stripped first. Catches "EARL DU VAL VERT" == "DU VAL VERT".
+
+NORMALIZATION: unaccent, lowercase, punctuation to spaces, then SORT the word
+tokens. Sorting is what collapses "Lemoine Jean-Claude" and "JEAN-CLAUDE LEMOINE"
+- this provider routinely reverses first/last name order between files.
+
+THE SIREN GUARD - important
+A row is only ever marked as a duplicate if its SIREN is NULL, or equals the
+survivor's SIREN. Two rows with DIFFERENT non-null SIRENs are two separately
+registered legal entities and must not be collapsed, however identical their
+names look. This matters in French agriculture, where one family commonly
+operates through several entities at one address:
+    444925549 ANTOINE CARDON   /  830687851 EARL ANTOINE CARDON
+    342450327 EARL DE LA CROIX BLANCHE  /  789799129 SCI DE LA CROIX BLANCHE
+The first version of this script lacked the guard and wrongly merged 56 such
+rows; they were unmarked and the guard added.
+
+PHONE IS DELIBERATELY NOT USED as an identity signal. An earlier attempt keyed on
+phone and produced a 12.5% duplicate rate that was wrong: +33890xxxxxx and
++33899xxxxxx are French premium-rate service lines shared across many departments.
 
 SURVIVOR SELECTION, in order:
-    1. has a SIREN            - verifiable against INSEE, carries enrichment
-    2. has a naf_code         - more complete
-    3. earliest created_at    - first seen wins, consistent with the ingest merge
-    4. lowest id              - deterministic tiebreak, so re-runs are stable
+    1. has a SIREN          - verifiable against INSEE, carries enrichment
+    2. has a naf_code       - more complete
+    3. earliest created_at  - first seen wins, consistent with the ingest merge
+    4. lowest id            - deterministic tiebreak, so re-runs are stable
+
+IDEMPOTENT BY CONSTRUCTION: every pass only considers rows that are not already
+marked, so a group whose duplicates were marked last run no longer has two
+unmarked members and produces nothing. Re-running is a safe no-op.
 
 SCOPE: qualified + qualified_unverified only. Duplicates among pending and
-disqualified companies are not marked - they are not delivered to anyone, and
-leaving them unmarked keeps this pass cheap and reviewable.
+disqualified companies are not marked - they are not delivered to anyone.
 
 Usage:
-    python scripts/m1_s5b_dedup.py --dry-run     # always look first
+    python scripts/m1_s5b_dedup.py --dry-run
     python scripts/m1_s5b_dedup.py
-    python scripts/m1_s5b_dedup.py --force       # re-evaluate already-checked rows
 """
 
 import argparse
@@ -64,57 +82,72 @@ logging.basicConfig(level=logging.INFO,
                     datefmt="%H:%M:%S")
 log = logging.getLogger("m1_s5b")
 
-DEDUP_METHOD = "exact_name_postal"
+# French legal forms and the provider's trailing activity tag, stripped in pass 2.
+LEGAL_FORM_PATTERN = (
+    r"\y(earl|gaec|sarl|eurl|sasu|sas|scea|sci|sca|snc|gfa|cuma|sc|sa|ea"
+    r"|eleveur|eleveurs|elevage)\y"
+)
 
-# One row per company (a company may have several sites - take a deterministic one),
-# with the normalized matching key attached.
-KEYED_CTE = """
+# Pass 1 key: normalize only. Pass 2 key: normalize with legal forms removed.
+KEY_RAW = "regexp_replace(unaccent(lower(o.raw_name)), '[^a-z0-9]+', ' ', 'g')"
+KEY_STRIPPED = (
+    "regexp_replace(regexp_replace(unaccent(lower(o.raw_name)), '[^a-z0-9]+', ' ', 'g'),"
+    f" '{LEGAL_FORM_PATTERN}', ' ', 'g')"
+)
+
+PASSES = [
+    ("exact_name_postal",   KEY_RAW),
+    ("stripped_legal_form", KEY_STRIPPED),
+]
+
+# Only ever considers rows not already marked, which is what makes this idempotent.
+CTE = """
 WITH one_site AS (
     SELECT DISTINCT ON (co.id)
            co.id, co.siren, co.naf_code, co.created_at,
-           co.qualification_status,
            btrim(s.postal_code) AS pc,
            coalesce(co.legal_name, co.trade_name) AS raw_name
     FROM staging.companies co
     JOIN staging.sites s ON s.company_id = co.id
     WHERE co.qualification_status IN ('qualified', 'qualified_unverified')
-      {stale_filter}
+      AND co.duplicate_of_company_id IS NULL
     ORDER BY co.id, s.siret NULLS LAST, s.id
 ),
 keyed AS (
     SELECT o.*,
            (SELECT string_agg(w, ' ' ORDER BY w)
-            FROM unnest(string_to_array(
-                   btrim(regexp_replace(unaccent(lower(o.raw_name)),
-                                        '[^a-z0-9]+', ' ', 'g')), ' ')) AS w
+            FROM unnest(string_to_array(btrim({key_expr}), ' ')) AS w
             WHERE w <> '') AS name_key
     FROM one_site o
 ),
 valid AS (
-    SELECT * FROM keyed
-    WHERE name_key IS NOT NULL AND name_key <> '' AND pc IS NOT NULL
+    SELECT * FROM keyed WHERE name_key IS NOT NULL AND name_key <> '' AND pc IS NOT NULL
 ),
 ranked AS (
     SELECT v.*,
-           row_number() OVER w  AS rn,
-           first_value(v.id) OVER w AS survivor_id,
+           row_number() OVER w      AS rn,
+           first_value(v.id)    OVER w AS survivor_id,
+           first_value(v.siren) OVER w AS survivor_siren,
            count(*) OVER (PARTITION BY v.name_key, v.pc) AS grp_size
     FROM valid v
     WINDOW w AS (
         PARTITION BY v.name_key, v.pc
-        ORDER BY (v.siren IS NOT NULL) DESC,
-                 (v.naf_code IS NOT NULL) DESC,
-                 v.created_at,
-                 v.id
+        ORDER BY (v.siren IS NOT NULL) DESC, (v.naf_code IS NOT NULL) DESC,
+                 v.created_at, v.id
     )
+),
+-- THE GUARD: a member is only a duplicate if it has no SIREN of its own, or the
+-- same SIREN as the survivor. Different non-null SIRENs = different legal entities.
+marked AS (
+    SELECT * FROM ranked
+    WHERE grp_size > 1 AND rn > 1
+      AND (siren IS NULL OR siren IS NOT DISTINCT FROM survivor_siren)
 )
 """
 
-STALE_FILTER = "AND (co.dedup_checked_at IS NULL)"
 
-
-def build(body: str, force: bool) -> str:
-    return KEYED_CTE.format(stale_filter="" if force else STALE_FILTER) + body
+def build(key_expr: str, body: str) -> str:
+    return CTE.format(key_expr=key_expr) + body
 
 
 def get_conn():
@@ -125,104 +158,88 @@ def get_conn():
     return psycopg2.connect(url)
 
 
-def summarize(cur, force: bool) -> dict:
-    cur.execute(build("""
-        SELECT count(*)                                              AS considered,
-               count(*) FILTER (WHERE grp_size > 1)                  AS in_a_dup_group,
-               count(*) FILTER (WHERE grp_size > 1 AND rn = 1)       AS survivors,
-               count(*) FILTER (WHERE grp_size > 1 AND rn > 1)       AS to_mark_duplicate,
-               count(DISTINCT (name_key, pc)) FILTER (WHERE grp_size > 1) AS dup_groups
-        FROM ranked
-    """, force))
-    considered, in_grp, survivors, to_mark, groups = cur.fetchone()
-    return {"considered": considered, "in_a_dup_group": in_grp,
-            "survivors": survivors, "to_mark_duplicate": to_mark,
-            "dup_groups": groups}
+def preview(cur, key_expr: str) -> dict:
+    cur.execute(build(key_expr, """
+        SELECT (SELECT count(*) FROM ranked)                       AS considered,
+               (SELECT count(*) FROM marked)                       AS would_mark,
+               (SELECT count(DISTINCT (name_key, pc)) FROM marked)  AS groups,
+               (SELECT count(*) FROM ranked
+                 WHERE grp_size > 1 AND rn > 1
+                   AND siren IS NOT NULL
+                   AND siren IS DISTINCT FROM survivor_siren)      AS blocked_by_siren_guard
+    """))
+    considered, would_mark, groups, blocked = cur.fetchone()
+    return {"considered": considered, "would_mark": would_mark,
+            "groups": groups, "blocked_by_siren_guard": blocked}
 
 
-def samples(cur, force: bool, n: int = 5) -> list[tuple]:
-    cur.execute(build("""
-        SELECT r.pc, r.name_key,
-               string_agg(
-                   CASE WHEN r.rn = 1 THEN 'KEEP  ' ELSE 'DUP   ' END ||
-                   coalesce(r.siren, '---------') || '  ' ||
-                   left(coalesce(co.legal_name, co.trade_name), 34),
-                   E'\\n              ' ORDER BY r.rn
-               ) AS members
-        FROM ranked r
-        JOIN staging.companies co ON co.id = r.id
-        WHERE r.grp_size > 1
-        GROUP BY r.pc, r.name_key
-        ORDER BY r.pc
-        LIMIT %(n)s
-    """, force), {"n": n})
+def samples(cur, key_expr: str, n: int = 4) -> list[tuple]:
+    cur.execute(build(key_expr, """
+        SELECT m.pc,
+               coalesce(sv.siren,'---------') || ' ' || left(coalesce(sv.legal_name,sv.trade_name),30)
+                 || '   <-   ' ||
+               coalesce(dp.siren,'---------') || ' ' || left(coalesce(dp.legal_name,dp.trade_name),30) AS pair
+        FROM marked m
+        JOIN staging.companies dp ON dp.id = m.id
+        JOIN staging.companies sv ON sv.id = m.survivor_id
+        ORDER BY m.pc LIMIT %(n)s
+    """), {"n": n})
     return cur.fetchall()
 
 
-def apply_marks(cur, force: bool) -> tuple[int, int]:
-    """Mark duplicates, then stamp the checkpoint on everything considered."""
-    cur.execute(build("""
+def apply_pass(cur, key_expr: str, method: str) -> int:
+    cur.execute(build(key_expr, """
         UPDATE staging.companies c
-        SET duplicate_of_company_id = r.survivor_id,
+        SET duplicate_of_company_id = m.survivor_id,
             dedup_method            = %(method)s,
             dedup_checked_at        = NOW()
-        FROM ranked r
-        WHERE c.id = r.id AND r.grp_size > 1 AND r.rn > 1
-    """, force), {"method": DEDUP_METHOD})
-    marked = cur.rowcount
-
-    # Survivors and singletons are checked too, so they are not re-examined.
-    cur.execute(build("""
-        UPDATE staging.companies c
-        SET dedup_checked_at = NOW()
-        FROM ranked r
-        WHERE c.id = r.id AND (r.grp_size = 1 OR r.rn = 1)
-    """, force))
-    return marked, cur.rowcount
+        FROM marked m
+        WHERE c.id = m.id
+    """), {"method": method})
+    return cur.rowcount
 
 
-def write_audit(cur, stats: dict, marked: int, force: bool) -> None:
-    payload = {**stats, "rows_marked": marked, "method": DEDUP_METHOD,
-               "mode": "force" if force else "unchecked-only"}
+def write_audit(cur, results: list[dict]) -> None:
     cur.execute("""
         INSERT INTO audit.audit_log
             (table_name, record_id, field_changed, old_value, new_value, changed_by, reason)
         VALUES ('staging.companies', NULL, 'duplicate_of_company_id', NULL, %s, %s, %s)
-    """, (json.dumps(payload, ensure_ascii=False), "m1_s5b_dedup.py",
-          f"Duplicate marking pass, method={DEDUP_METHOD}"))
+    """, (json.dumps({"passes": results}, ensure_ascii=False), "m1_s5b_dedup.py",
+          "Duplicate marking pass"))
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="M1-S5b duplicate marking")
     ap.add_argument("--dry-run", action="store_true", help="report only, write nothing")
-    ap.add_argument("--force", action="store_true", help="re-evaluate already-checked rows")
     args = ap.parse_args()
 
-    log.info("Method : %s", DEDUP_METHOD)
-    log.info("Mode   : %s%s", "DRY-RUN (no writes)" if args.dry_run else "APPLY",
-             " --force" if args.force else "")
+    log.info("Mode: %s", "DRY-RUN (no writes)" if args.dry_run else "APPLY")
 
     conn = get_conn()
     conn.autocommit = False
     try:
+        results = []
         with conn.cursor() as cur:
-            stats = summarize(cur, args.force)
-            if stats["considered"] == 0:
-                log.info("Nothing to do - every qualified company already dedup-checked.")
-                log.info("Pass --force to re-evaluate.")
-                return
+            for method, key_expr in PASSES:
+                log.info("")
+                log.info("=== pass: %s ===", method)
+                p = preview(cur, key_expr)
+                log.info("  unmarked rows considered : %s", f"{p['considered']:,}")
+                log.info("  duplicate groups         : %s", f"{p['groups']:,}")
+                log.info("  rows to mark             : %s", f"{p['would_mark']:,}")
+                log.info("  blocked by SIREN guard   : %s  (different legal entities)",
+                         f"{p['blocked_by_siren_guard']:,}")
 
-            log.info("")
-            log.info("Companies considered      : %s", f"{stats['considered']:,}")
-            log.info("Duplicate groups found    : %s", f"{stats['dup_groups']:,}")
-            log.info("Rows inside those groups  : %s", f"{stats['in_a_dup_group']:,}")
-            log.info("  -> survivors (kept)     : %s", f"{stats['survivors']:,}")
-            log.info("  -> to mark as duplicate : %s", f"{stats['to_mark_duplicate']:,}")
+                for pc, pair in samples(cur, key_expr):
+                    log.info("    [%s] %s", pc, pair)
 
-            log.info("")
-            log.info("Sample groups:")
-            for pc, _key, members in samples(cur, args.force):
-                log.info("  [%s]  %s", pc, members)
+                if args.dry_run:
+                    results.append({"method": method, **p})
+                    continue
+
+                marked = apply_pass(cur, key_expr, method)
+                log.info("  -> marked %s", f"{marked:,}")
+                results.append({"method": method, "marked": marked, **p})
 
             if args.dry_run:
                 conn.rollback()
@@ -230,12 +247,11 @@ def main() -> None:
                 log.info("DRY-RUN - nothing written.")
                 return
 
-            marked, checked = apply_marks(cur, args.force)
-            write_audit(cur, stats, marked, args.force)
+            write_audit(cur, results)
             conn.commit()
             log.info("")
-            log.info("Applied: %s marked as duplicates, %s checkpointed, 1 audit row.",
-                     f"{marked:,}", f"{checked:,}")
+            log.info("Applied: %s rows marked across %d passes, 1 audit row.",
+                     f"{sum(r['marked'] for r in results):,}", len(results))
     finally:
         conn.close()
 
