@@ -138,7 +138,9 @@ async def fetch_siren(session: aiohttp.ClientSession, siren: str, semaphore: asy
     """
     Call the API for one SIREN. Returns parsed enrichment dict or None on failure.
     """
-    url = f"{API_BASE}?q={siren}&page=1&per_page=1"
+    # per_page=10, not 1: the exact-SIREN guard below needs candidates to match
+    # against. With per_page=1 a mis-ranked top hit would hide the correct entity.
+    url = f"{API_BASE}?q={siren}&page=1&per_page=10"
     async with semaphore:
         await asyncio.sleep(REQUEST_DELAY)  # gentle pacing within the semaphore
         for attempt in range(1, RETRY_ATTEMPTS + 1):
@@ -156,7 +158,24 @@ async def fetch_siren(session: aiohttp.ClientSession, siren: str, semaphore: asy
                     results = data.get("results", [])
                     if not results:
                         return {"_not_found": True}
-                    return parse_api_result(results[0])
+                    # This is a full-text SEARCH endpoint, not an exact-SIREN
+                    # lookup, so results[0] is whatever ranked first - not
+                    # necessarily the company we asked for. Taking it blindly
+                    # would write another company's name/NAF/legal form onto this
+                    # row and then stamp sirene_last_checked_at, making the error
+                    # silent and permanent. Match explicitly instead.
+                    match = next(
+                        (r for r in results
+                         if (r.get("siren") or "").strip() == siren),
+                        None,
+                    )
+                    if match is None:
+                        log.warning(
+                            f"SIREN {siren} not in results (top hit was "
+                            f"{(results[0].get('siren') or '?').strip()}) - skipping"
+                        )
+                        return {"_not_found": True}
+                    return parse_api_result(match)
             except asyncio.TimeoutError:
                 log.warning(f"Timeout for SIREN {siren} (attempt {attempt})")
             except Exception as exc:
