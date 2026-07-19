@@ -316,8 +316,32 @@ This is the **establishment-level** table, keyed on `SIRET` (the 14-digit identi
 | UUID primary keys everywhere | Auto-increment integers | UUIDs are merge-safe if we ever consolidate multiple Supabase instances or import from external systems |
 | COALESCE on UPDATE (never overwrite) | Last-write-wins | Data from SIRENE is authoritative for certain fields, but we don't want to overwrite a human-corrected value with an API value. COALESCE fills NULLs only |
 | Partial index `idx_companies_not_enriched` | Full table scan | With 128k rows, a full scan on every enrichment run would be wasteful. The partial index (`WHERE sirene_last_checked_at IS NULL`) makes "find unenriched rows" instant |
-| `pg_trgm` extension for fuzzy matching | Levenshtein / exact match only | French business names have accent variations, abbreviations (GAEC vs G.A.E.C.), and typos. Trigram similarity handles this robustly |
-| RLS enabled but permissive | No RLS | Future-proofing. When Supabase Auth users are configured, we tighten policies without schema changes |
+| `pg_trgm` extension for fuzzy matching | Levenshtein / exact match only | French business names have accent variations, abbreviations (GAEC vs G.A.E.C.), and typos. Trigram similarity handles this robustly. **NOT YET IMPLEMENTED — see the correction below** |
+| RLS enabled but permissive | No RLS | Future-proofing. When Supabase Auth users are configured, we tighten policies without schema changes. **The policies never actually applied — see the correction below** |
+
+> [!WARNING]
+> **Corrections (2026-07-19).** Three things this document previously described as
+> working are not implemented. Recorded here so nobody builds on them by mistake:
+>
+> 1. **`pg_trgm` fuzzy dedup does not exist.** The extension is enabled
+>    (`001:12`) and a GIN index is created (`001:118`), but **no query in the
+>    repository uses either**. Companies without a valid SIRET are inserted with
+>    no matching of any kind. That is ~83,344 rows — 65% of the database — which
+>    are effectively undeduplicated. This is the largest gap between these docs
+>    and the code.
+> 2. **`audit.audit_log` was declared but never written to** until M1-S5 on
+>    2026-07-19. The dedup-decision logging promised in
+>    `implementation_plan_leads.md:257,372` was never implemented.
+> 3. **`naf_label` is never populated from SIRENE.** The M1-S4 docstring and
+>    section 4 below both claim it is extracted; `parse_api_result()` does not
+>    return it. `naf_label` is *only ever* the free-text `Activite` column from
+>    the source Excel. This matters a lot for qualification — see 5.1.
+>
+> Also: the RLS policies in `001:326` use `CREATE POLICY IF NOT EXISTS`, which is
+> **not valid PostgreSQL in any version**. That block errored on apply, so RLS is
+> enabled on all 7 tables with **zero policies**. Service role bypasses RLS so
+> nothing is broken today, but anon/authenticated access is deny-all and 001
+> cannot be replayed on a fresh database.
 
 ---
 
@@ -435,6 +459,137 @@ For each company with a SIREN that hasn't been enriched yet (`sirene_last_checke
 
 **Pagination bug found and fixed**: The initial query used `LIMIT %s OFFSET %s`, but since the `WHERE` clause filters on `sirene_last_checked_at IS NULL` (which shrinks as we process), the `OFFSET` caused rows to be skipped. Fixed by removing `OFFSET` entirely — the query itself naturally advances as rows are updated.
 
+> [!NOTE]
+> **Two defects in `m1_s4_sirene_enrich.py` found on 2026-07-19, not yet fixed.**
+> - **Unvalidated API match.** The script queries
+>   `recherche-entreprises.api.gouv.fr/search?q=<siren>`, a **full-text search**
+>   endpoint, then accepts `results[0]` without checking the returned SIREN equals
+>   the requested one. If ranking ever returns a different entity, that company is
+>   enriched with another company's name, NAF code and legal form, then stamped
+>   `sirene_last_checked_at` so it is never re-checked. Silent and permanent.
+>   Worth an audit query before trusting enrichment further.
+> - **`--dry-run` hangs forever** without `--limit`. The loop only advances because
+>   rows get UPDATEd out of the `WHERE` predicate; a dry run writes nothing, so the
+>   same 500 rows are returned indefinitely. The same hang occurs on sustained API
+>   failure.
+
+---
+
+### M1-S5: Qualification (2026-07-19)
+
+Classifies every company against per-sector rules. Config lives in
+`config/sector_rules.py` — versioned in git rather than a DB table, so rule
+changes are diffable and attributable. `RULE_VERSION` is the re-qualification
+trigger: bump it and the next run reclassifies every affected row, no manual
+reset.
+
+**Two tiers.** The original spec sent every company without a SIREN to `pending`.
+Measured against live data that would have shelved most of the usable dataset:
+83,344 companies (65%) have no SIREN, but 83,326 have a contact, 83,324 have a
+phone and 19,443 have an email — four times more reachable email than the entire
+SIREN-verified agriculture segment. So they get their own tier instead:
+
+| Tier | Status | Basis | Confidence |
+|------|--------|-------|------------|
+| 1 | `qualified` | Official INSEE NAF code in scope | High — SIREN-verified |
+| 2 | `qualified_unverified` | Data provider's `naf_label` only, no SIREN | Lower — unverified, and undeduplicated |
+
+**Three rule details that are easy to get wrong:**
+
+- **NAF matching is by prefix (`01.`), not an exact-code allow-list.** 1,281
+  companies carry pre-2008 **NAF rév.1** codes (`01.2A`, `01.4A`, `01.1A`,
+  `01.2E`, `01.3Z`), 1,136 of them agricultural. An exact list of modern rév.2
+  codes silently drops every one.
+- **Label exclusions need word boundaries (`\y`).** Without them `chat` matches
+  inside `achat` and `marchand`, disqualifying real prospects. The exclusion list
+  removes 4,607 companies that a naive "elevage|eleveur" match would have swept
+  in: `eleveur chien chat` (1,714), `eleveur d oiseaux` (1,541 — of which 1,525
+  have emails, so it looks like a win until you read the label), `Fleuriste`
+  (1,153). Horse breeding is deliberately **kept** — it is a listed target sector.
+- **Two rules from the original spec were unimplementable and were dropped.**
+  `employee_bracket >= "1-2"` would have disqualified 89% of the database
+  (114,092 of 128,116 rows are NULL, and the values are INSEE tranche codes as
+  TEXT so lexical `>=` is wrong anyway: `'11' < '2'`). `sirene_etat = 'F'`
+  matches **zero** rows — the API in use only returns active entities, so closed
+  businesses surface as "not found" instead. The rule is kept for future runs but
+  is currently a no-op.
+
+**Results** (128,116 companies, rule version `agri-v1`):
+
+| Status | Reason | Rows | Share |
+|--------|--------|------|-------|
+| `qualified_unverified` | — | 61,944 | 48.3% |
+| `qualified` | — | 39,701 | 31.0% |
+| `pending` | `no_siren_no_label` | 16,793 | 13.1% |
+| `disqualified` | `label_out_of_scope` | 4,607 | 3.6% |
+| `disqualified` | `naf_out_of_scope` | 3,161 | 2.5% |
+| `pending` | `sirene_not_found` | 1,782 | 1.4% |
+| `disqualified` | `public_administration` | 128 | 0.1% |
+
+The GFA rescue recovered **2,225 companies** (1,977 at `68.20B` + 248 at
+`35.11Z`) that a strict NAF-code rule would have thrown away. 68 were correctly
+left out because their labels do not claim agriculture. Communes (`84.11Z`) are
+dropped regardless of label.
+
+**Verification performed**: dry-run distribution compared against an independent
+hand-written query (identical); re-run confirmed a true no-op (0 stale rows);
+five disqualified companies spot-checked by hand. This run also wrote the
+**first row ever** to `audit.audit_log`.
+
+**Known limitation — deferred deliberately.** 2,430 of the 3,161
+`naf_out_of_scope` companies (78%) carry an agricultural source label, spread
+across ~100 NAF codes rather than the two that were rescued. Some are clearly
+farms (`68.20A` land holding, `43.12A` earthworks), others are agritourism or
+leisure (`55.20Z` farm gîtes, `93.19Z` sport, `85.51Z` riding schools). Recovering
+them is a business decision, not a technical one. Because each is tagged
+`naf_out_of_scope`, revisiting costs a `RULE_VERSION` bump and one re-run — this
+is exactly what the version column is for.
+
+---
+
+### M1-S7: Natural-Language Query via Supabase MCP (2026-07-19)
+
+MCP was connected with full read/write access (a deliberate change from the
+read-only role the original plan proposed — see `CLAUDE.md`). Confirmed Sam's
+prediction: **no custom code was needed**. The work was entirely in making the
+views answer real questions.
+
+**Acceptance test.** The Milestone-1 question was answered twice — once through
+`public.v_qualified_contacts`, once hand-written against `staging.*` with no
+views involved. Results were byte-identical, satisfying the
+`implementation_plan_leads.md:394` criterion ("an answer you can verify by
+running the SQL manually").
+
+**What the first run exposed.** The top result was `department = NULL` with 735
+farms, dwarfing every real department: **93.4% of sites (119,786 of 128,267) have
+no department**, making the "broken down by department" question meaningless.
+93,388 of those do have a postal code, so migration 006 derives it in the view —
+`staging.sites.department` is left untouched so the raw value stays honest.
+
+A naive `left(postal_code, 2)` would be wrong three ways, so four cases are
+handled, each spot-checked against the city name:
+
+| Case | Example | Result | Verified against |
+|------|---------|--------|------------------|
+| Leading zero lost in Excel | `1000` | `01` | city "Bourg en Bresse" (01000, Ain) |
+| DOM-TOM needs 3 digits | `97480` | `974` | city "st joseph" (Réunion) |
+| Corsica has no number | `20000` | `2A` | Ajaccio, Sartène, Figari (Corse-du-Sud) |
+| Metropolitan | `71400` | `71` | — |
+
+Two digits would have collapsed Guadeloupe, Martinique and Réunion into one
+`'97'`. **Department coverage went from 7.5% to 87.3%.** A `department_source`
+column records which branch produced each value, so an inferred department is
+never mistaken for a recorded one.
+
+**Two caveats.** ~99 sites (0.10%) have address fragments in `city` with a postal
+code contradicting `postal_code` (e.g. postal `1027`, city
+`"Rue De Lille - 59560Comines"`), so their derived department is wrong —
+pre-existing source corruption. And **`with_verified_email` is 0 and will stay 0**
+until M1-S6: every email is `verification_status = 'candidate'` by design, since
+verification happens at campaign send time. The literal acceptance question asks
+for a *verified* email, so it correctly returns zero; the test was run against
+`with_email` instead.
+
 ---
 
 ## 5. Investigations & Findings
@@ -492,51 +647,110 @@ We queried a sample of mismatched SIRENs against the live SIRENE API:
 
 ## 6. Current Data Profile
 
-> These numbers are from the last verified run (2026-07-12). Re-run the stats query to get current values.
+> Verified live against the database on **2026-07-19**. Re-run the stats query to refresh.
 
 | Table | Row Count |
 |-------|-----------|
-| `raw.ingest_rows` | ~133,000 |
+| `raw.ingest_rows` | 202,983 |
 | `staging.source_files` | 2 |
-| `staging.companies` | ~128,116 |
-| `staging.sites` | ~128,116 |
-| `staging.contacts` | ~128,116 |
-| `staging.emails` | ~40,000+ |
+| `staging.companies` | 128,116 |
+| `staging.sites` | 128,267 |
+| `staging.contacts` | 130,690 |
+| `staging.emails` | 25,506 |
+| `audit.audit_log` | 1 (first-ever write, from the M1-S5 run) |
 
 **Company breakdown**:
 
 | Category | Count |
 |----------|-------|
-| Has SIREN | ~44,772 |
-| No SIREN (dedup by name only) | ~83,344 |
-| SIRENE-enriched | ~42,910 |
-| Pending enrichment (errors/not found) | ~1,862 |
+| Has SIREN | 44,772 |
+| No SIREN (**undeduplicated** — see corrections in 3.4) | 83,344 |
+| SIRENE-enriched | 42,910 |
+| Not found in SIRENE | 1,782 |
+
+**Qualification** (rule version `agri-v1`):
+
+| Status | Count |
+|--------|-------|
+| `qualified` (tier 1, official NAF) | 39,701 |
+| `qualified_unverified` (tier 2, label only) | 61,944 |
+| `pending` | 18,575 |
+| `disqualified` | 7,896 |
+
+**Reachability** — what is actually usable for a campaign:
+
+| Metric | Tier 1 | Tier 2 |
+|--------|--------|--------|
+| Contact rows in `v_qualified_contacts` | 39,323 | 61,942 |
+| Distinct companies | 37,037 | 61,942 |
+| With an email | 5,048 | 9,530 |
+| With a phone | 39,321 | 61,941 |
+| With a **verified** email | 0 | 0 |
+
+> Verified email is 0 across the board **by design** — verification is deferred to
+> campaign send time (M1-S6), so every address is still `candidate`.
+
+**Data quality caveats worth knowing before quoting any of these numbers:**
+
+| Issue | Scale | Impact |
+|-------|-------|--------|
+| No-SIREN companies are undeduplicated | 83,344 (65%) | The same farm may appear more than once. Tier 2 makes them *usable*, not *unique* — real risk of contacting a prospect twice in one campaign |
+| `employee_bracket` is NULL | 114,092 (89%) | Any size-based targeting is impossible today |
+| `department` is NULL on the site row | 119,786 (93.4%) | Mitigated: derived from postal code in the views, coverage now 87.3% |
+| `city` contaminated with address fragments | 99 (0.10%) | Their derived department is wrong |
+| Emails exist for only a fifth of contacts | 25,506 of 130,690 | Phone is the far more complete channel — 99.9% coverage |
 
 ---
 
 ## 7. What's Next — Roadmap
 
-### M1-S5: Qualification Rules (Next)
+> [!NOTE]
+> **Milestone numbering.** This document previously listed M1-S7 as "Campaign
+> Export". `implementation_plan_leads.md:391` and `CLAUDE.md` both define M1-S7 as
+> the natural-language query step. The plan wins; campaign export is now M1-S8.
 
-Apply business rules to classify each company as `qualified`, `disqualified`, or `pending`:
+| Stage | Status |
+|-------|--------|
+| M1-S1 File inspection | ✅ Done |
+| M1-S2 Schema | ✅ Done |
+| M1-S3 Ingest / normalize / dedup | ✅ Done (partial — fuzzy dedup never built) |
+| M1-S4 SIRENE enrichment | ✅ Done (95.8%) |
+| M1-S5 Qualification | ✅ Done 2026-07-19 |
+| M1-S7 NL query via MCP | ✅ Done 2026-07-19 |
+| M1-S6 Email verification | ⏸ Deferred by design |
+| M1-S8 Campaign export | 🔜 Planned |
 
-| Rule | Status | Action |
-|------|--------|--------|
-| `sirene_etat = 'F'` (closed) | Disqualified | Business is legally closed |
-| `naf_code` in target sectors | Qualified | Agriculture, agrifood, livestock |
-| `naf_code` = `84.11Z` (public admin) | Disqualified | Town halls, not a prospect |
-| `naf_code` = `68.20B` but `naf_label` = 'AGRICULTEURS' | **Decision needed** | GFAs — real farms legally as real estate |
-| No SIREN at all | Pending | Cannot enrich or verify |
+### Highest-value next step: SIREN recovery (M1-S4b)
 
-### M1-S6: Email Discovery & Verification (Planned)
+Not previously in the plan, but the data argues for it strongly. 83,344
+companies (65%) have no SIREN, which is the single constraint behind three
+separate problems: they cannot be deduplicated, cannot be SIRENE-verified, and
+are stuck in the lower-confidence tier 2. Matching them to SIRENE on
+name + postal code would promote a large fraction into tier 1 and make dedup
+possible at the same time. Rough cost at the current ~5 req/s: ~4.6 hours.
+Expected match rate unknown — worth a 500-row sample first.
+
+### Also outstanding (none block anything today)
+
+| Item | Why it matters |
+|------|----------------|
+| **`pg_trgm` fuzzy dedup** | Never implemented. 83k rows may contain duplicates; a campaign could contact the same farm twice |
+| **RLS policies** | `CREATE POLICY IF NOT EXISTS` is invalid SQL, so zero policies exist. Needed before any non-service-role access |
+| **M1-S4 unvalidated `results[0]`** | Possible silent cross-contamination of enriched data. Audit before trusting further |
+| **Missing FK** on `raw.ingest_rows.source_file_id` | Violates the project's own "no orphan rows" rule |
+| **`requirements.txt` is wrong** | Missing `calamine` and `aiohttp` (both required), lists 3 unused packages |
+| **The 2,430 label-agri companies** | Currently `naf_out_of_scope`. Recovering them is a business decision + a `RULE_VERSION` bump |
+
+### M1-S6: Email Discovery & Verification (Deferred by design)
 
 1. Discover company website domains
 2. Generate email candidates from name patterns
-3. Batch-verify via MillionVerifier / Hunter.io (free tier)
+3. Verify via MillionVerifier / Hunter.io free tier — **at campaign send time, not
+   at ingestion**, so free-tier quota is not spent on results that go stale first
 
-### M1-S7: Campaign Export (Planned)
+### M1-S8: Campaign Export (Planned)
 
-1. Generate delivery CSVs filtered by qualification + verification status
+1. Generate delivery CSVs filtered by qualification tier + verification status
 2. Track campaign sends and responses in `staging.campaign_contacts`
 
 ---
@@ -568,7 +782,28 @@ pip install -r requirements.txt
 
 ```bash
 cp .env.example .env
-# Set SUPABASE_DB_URL=postgresql://postgres:***@db.xxx.supabase.co:5432/postgres
+```
+
+> [!IMPORTANT]
+> **Use the session-mode pooler, not the direct connection.** The direct host
+> `db.<ref>.supabase.co` now resolves to **IPv6 only**. On a machine without an
+> IPv6 route, psycopg2 fails with
+> `could not translate host name ... Name or service not known` — which looks like
+> a credentials problem but is not. This broke every script in `scripts/` on
+> 2026-07-19 and is why the URL format changed.
+>
+> ```
+> SUPABASE_DB_URL=postgresql://postgres.<ref>:<pw>@aws-0-<region>.pooler.supabase.com:5432/postgres
+> ```
+>
+> Note the username is `postgres.<project-ref>`, not plain `postgres`.
+
+The Supabase MCP server additionally reads `SUPABASE_ACCESS_TOKEN` from the
+**shell environment** — Claude Code does not load `.env`. On Windows:
+
+```powershell
+[Environment]::SetEnvironmentVariable("SUPABASE_ACCESS_TOKEN","sbp_...","User")
+# then fully restart Claude Code — a window reload is not enough
 ```
 
 ### Pipeline Execution Order
@@ -582,14 +817,28 @@ psql $DATABASE_URL < migrations/001_initial_schema.sql
 # Or run the migration runners:
 python scripts/apply_migration_002.py
 python scripts/apply_migration_003.py
+# 004-006 were applied via the Supabase MCP server:
+#   004_qualification.sql      - qualification columns + constraints
+#   005_query_views.sql        - both tiers, best-email LATERAL, department rollup
+#   006_derive_department.sql  - derive department from postal code
 
 # 3. Ingest raw data
 python scripts/m1_s3_ingest.py
 
-# 4. Enrich from SIRENE (takes ~4 hours for 44k companies)
+# 4. Enrich from SIRENE (~4 hours for 44k companies)
 python scripts/m1_s4_sirene_enrich.py
-# Test with: python scripts/m1_s4_sirene_enrich.py --limit 50 --dry-run
+# NOTE: --dry-run hangs forever without --limit. Always pair them:
+python scripts/m1_s4_sirene_enrich.py --limit 50 --dry-run
+
+# 5. Qualify (seconds - one set-based UPDATE, not row-by-row)
+python scripts/m1_s5_qualify.py --dry-run   # always review the distribution first
+python scripts/m1_s5_qualify.py
 ```
+
+**Re-qualifying after a rule change**: edit `config/sector_rules.py`, bump
+`RULE_VERSION`, re-run. Rows whose stored version differs are reclassified
+automatically. Running without bumping the version is a deliberate no-op — use
+`--force` to override.
 
 ---
 
@@ -599,9 +848,14 @@ python scripts/m1_s4_sirene_enrich.py
 leads_provider_codes/
 |-- .env                           # Supabase connection string (gitignored)
 |-- .env.example                   # Template for .env
+|-- .mcp.json                      # Supabase MCP server config (token via env var)
 |-- .gitignore
+|-- CLAUDE.md                      # Working conventions + settled decisions
 |-- README.md                      # Quick-start README
-|-- requirements.txt               # Python dependencies
+|-- implementation_plan_leads.md   # Milestone breakdown and done-criteria
+|-- requirements.txt               # Python dependencies (OUT OF SYNC - see roadmap)
+|-- config/
+|   +-- sector_rules.py            # Qualification rules + RULE_VERSION
 |-- docs/
 |   +-- project_documentation.md   # <-- This file
 |-- Data Globale 05 juillet 2026/
@@ -611,11 +865,66 @@ leads_provider_codes/
 |-- migrations/
 |   |-- 001_initial_schema.sql       # Full DDL
 |   |-- 002_add_source_metadata.sql
-|   +-- 003_add_sirene_enrichment_columns.sql
+|   |-- 003_add_sirene_enrichment_columns.sql
+|   |-- 004_qualification.sql        # Qualification columns + constraints
+|   |-- 005_query_views.sql          # Both tiers, best-email LATERAL
+|   +-- 006_derive_department.sql    # Department derived from postal code
 +-- scripts/
     |-- m1_s1_inspect_files.py       # Read-only file inspection
     |-- m1_s3_ingest.py              # Raw ingest + normalize + dedup
     |-- m1_s4_sirene_enrich.py       # SIRENE API enrichment
+    |-- m1_s5_qualify.py             # Qualification pass (set-based)
     |-- apply_migration_002.py       # Migration runner
     +-- apply_migration_003.py       # Migration runner
 ```
+
+---
+
+## 11. Where the Project Stands
+
+**In one sentence**: three scattered Excel files are now a queryable, enriched,
+qualified prospect database that answers natural-language questions — with known,
+documented gaps.
+
+### The journey
+
+| Stage | What changed |
+|-------|--------------|
+| Start | 3 Excel files, ~203k rows, overlapping, no schema, no way to query |
+| M1-S1 | Established file B ⊂ file C (100% SIRET overlap) → skipped B, avoiding mass duplication |
+| M1-S2 | 4 schemas, 8 tables, raw → staging → audit separation |
+| M1-S3 | 202,983 raw rows → 128,116 companies / 128,267 sites / 130,690 contacts |
+| M1-S4 | 42,910 companies enriched from INSEE (95.8% of those with a SIREN) |
+| M1-S5 | 101,645 companies qualified across two tiers; 7,896 explicitly rejected with reasons |
+| M1-S7 | Natural-language questions answerable and verifiable, no custom code |
+
+### The headline result
+
+**101,645 qualified prospects** — 39,701 SIREN-verified (tier 1) and 61,944
+label-qualified (tier 2) — of which **14,578 have an email** and **101,262 have a
+phone**.
+
+The most consequential decision was tier 2. Following the original spec literally
+would have produced 39,701 qualified prospects and shelved 83,344 as `pending`.
+Measuring first showed those "unusable" records held four times more reachable
+email than the entire verified segment. That single choice is the difference
+between a 39k and a 101k deliverable.
+
+### What this is not, yet
+
+Honest limits, so nobody over-promises to the client:
+
+- **Tier 2 is not deduplicated.** Fuzzy dedup was documented but never built. A
+  campaign drawing on tier 2 can contact the same farm twice.
+- **No email is verified.** All 25,506 are `candidate`. Verification is deliberately
+  deferred to send time.
+- **Phone is the real channel.** 99.9% coverage versus 20% for email.
+- **Size targeting is impossible.** `employee_bracket` is NULL for 89% of rows.
+- **~13% of leads have no department**, even after derivation from postal codes.
+
+### The most useful thing to do next
+
+**SIREN recovery (M1-S4b).** One missing field — SIREN on 65% of companies — is
+the root cause of tier 2 existing, of dedup being impossible, and of enrichment
+being unavailable for most of the database. Recovering it collapses three problems
+into one job.
