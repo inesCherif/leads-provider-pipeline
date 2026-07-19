@@ -645,6 +645,58 @@ We queried a sample of mismatched SIRENs against the live SIRENE API:
 
 ---
 
+### 5.2 Duplicate Measurement in the Qualified Set (2026-07-19)
+
+**Why this was measured**: M1-S5 reported 101,645 qualified prospects, but tier 2
+is undeduplicated (fuzzy dedup was never built — see 3.4). If duplication were
+material, that headline is inflated and a campaign could contact the same farm
+twice.
+
+**Result: 4,365 confirmed duplicates among the 88,930 qualified rows that have a
+usable key — 4.9%. So ~101,645 raw rows represent roughly 97,280 real
+businesses.** 2,990 of the duplicate groups span **both tiers**.
+
+**The mechanism.** The same farm appears in both source files — once with a SIRET
+(→ tier 1) and once without (→ tier 2). M1-S3 deduplicated on SIRET only, so the
+two records never merged. Confirmed examples, identical on name, postal code
+*and* city, differing only in whether a SIREN is present:
+
+| Postal | City | Tier 1 | Tier 2 |
+|--------|------|--------|--------|
+| 06200 | NICE | `CHEVAL LIBRE 06` (SIREN 818627168) | `CHEVAL LIBRE 06` (no SIREN) |
+| 59269 | ARTRES | `FERME DES 3 MUIDS` (SIREN 899892749) | `FERME DES 3 MUIDS` (no SIREN) |
+| 76590 | CRIQUETOT SUR LONGUEVILLE | `GAEC DES 2 SAPINS` (SIREN 495178907) | `GAEC DES 2 SAPINS` (no SIREN) |
+
+**Method, and one false start worth recording.** The first attempt used
+`phone_main` as the identity key and produced an alarming 12.5% duplication rate.
+**That figure was wrong.** Spot-checking showed the worst offenders were numbers
+like `+33890212903` and `+33899105777` shared across five different departments —
+these are French **premium-rate service numbers** (`0890`, `0899`), a shared
+agricultural helpline or provider placeholder, not one business. *Phone is not an
+identity key in this dataset.*
+
+The working key is **normalized name + postal code**: unaccent, lowercase, strip
+punctuation, then **sort the word tokens** — which is what collapses
+`"Lemoine Jean-Claude"` and `"JEAN-CLAUDE LEMOINE"` onto the same key. Person-name
+records from this provider frequently reverse first/last name order between files.
+
+**Two reasons the real rate is higher than 4.9%:**
+
+1. **12,715 qualified rows have no usable key** (no postal code) and are excluded
+   from the measurement entirely.
+2. This is an **exact**-key match. A separate trigram pass at `similarity > 0.65`
+   within the same postal code found **924 additional near-miss pairs** in tier 2
+   alone — spelling variants the exact key misses.
+
+**Also found**: the `pg_trgm` GIN index created in `001:118` is on
+`legal_name` — which is **NULL for 92% of tier-2 companies** (only 5,016 of 61,944
+have one). Tier 2 carries `trade_name` instead, on all 61,944 rows. So the one
+index built for fuzzy dedup does not cover the rows that actually need it. Any
+real dedup implementation needs an index on `trade_name`, or on a
+`coalesce(legal_name, trade_name)` expression.
+
+---
+
 ## 6. Current Data Profile
 
 > Verified live against the database on **2026-07-19**. Re-run the stats query to refresh.
@@ -900,9 +952,14 @@ documented gaps.
 
 ### The headline result
 
-**101,645 qualified prospects** — 39,701 SIREN-verified (tier 1) and 61,944
-label-qualified (tier 2) — of which **14,578 have an email** and **101,262 have a
-phone**.
+**101,645 qualified rows — approximately 97,280 distinct businesses** once
+measured duplication is subtracted (see 5.2). Split 39,701 SIREN-verified
+(tier 1) and 61,944 label-qualified (tier 2), of which **14,578 have an email**
+and **101,262 have a phone**.
+
+> Quote the deduplicated figure to the client, not the raw row count. At least
+> 4,365 rows are confirmed duplicates and the true number is higher, because
+> 12,715 rows lack the postal code needed to check them at all.
 
 The most consequential decision was tier 2. Following the original spec literally
 would have produced 39,701 qualified prospects and shelved 83,344 as `pending`.
@@ -914,8 +971,10 @@ between a 39k and a 101k deliverable.
 
 Honest limits, so nobody over-promises to the client:
 
-- **Tier 2 is not deduplicated.** Fuzzy dedup was documented but never built. A
-  campaign drawing on tier 2 can contact the same farm twice.
+- **Tier 2 is not deduplicated.** Fuzzy dedup was documented but never built.
+  Measured: **4,365 confirmed duplicates (4.9%)**, of which 2,990 groups span both
+  tiers — the same farm present once with a SIRET and once without. A campaign
+  drawing on both tiers will contact those farms twice. See 5.2.
 - **No email is verified.** All 25,506 are `candidate`. Verification is deliberately
   deferred to send time.
 - **Phone is the real channel.** 99.9% coverage versus 20% for email.
