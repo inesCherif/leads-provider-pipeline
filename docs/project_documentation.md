@@ -863,15 +863,40 @@ the confident matches.
 | M1-S6 Email verification | ⏸ Deferred by design |
 | M1-S8 Campaign export | 🔜 Planned |
 
-### Highest-value next step: SIREN recovery (M1-S4b)
+### Highest-value next step: SIREN recovery (M1-S4b) — feasibility MEASURED
 
-Not previously in the plan, but the data argues for it strongly. 83,344
-companies (65%) have no SIREN, which is the single constraint behind three
-separate problems: they cannot be deduplicated, cannot be SIRENE-verified, and
-are stuck in the lower-confidence tier 2. Matching them to SIRENE on
-name + postal code would promote a large fraction into tier 1 and make dedup
-possible at the same time. Rough cost at the current ~5 req/s: ~4.6 hours.
-Expected match rate unknown — worth a 500-row sample first.
+83,344 companies (65%) have no SIREN, the single constraint behind three
+problems: they cannot be deduplicated on a hard key, cannot be SIRENE-verified,
+and are stuck in tier 2. Recovering it addresses all three.
+
+`scripts/m1_s4b_siren_recovery_sample.py` measured this on a 500-company sample
+against the live API, querying name + `code_postal`. **Read-only — no writes.**
+
+| Verdict | Share | Meaning |
+|---------|-------|---------|
+| `confident` | **42.0%** | Exactly one candidate whose normalized name matches exactly — auto-appliable |
+| `no_result` | 35.6% | Nothing in the registry for that name in that commune |
+| `weak` | 14.0% | Best similarity below 0.80 — correctly rejected |
+| `probable` | 6.0% | One candidate, high but inexact similarity — reviewable |
+| `ambiguous` | 2.4% | Several equally-good candidates |
+
+**Correction to the earlier estimate**: the addressable population is **41,777,
+not 83,344**. Roughly half the no-SIREN companies have no valid 5-digit postal
+code, and without it name matching is not tractable. That also cuts the full-run
+cost to **~2.3 hours**, not 4.6.
+
+**Expected yield: ~17,500 companies promoted from tier 2 to tier 1**, each
+gaining a verifiable identity, SIRENE enrichment eligibility, and a hard dedup
+key. A further ~2,500 would land in a reviewable middle.
+
+Sample verdicts behaved sensibly: `DE LA BOISSIERE EARL` → `530823178 EARL DE LA
+BOISSIERE` (confident); `LA HOULERIE` → `GROUPEMENT AGRICOLE D EXPLOITATION`
+(sim 0.28, correctly rejected as weak). The `ambiguous` cases are mostly the
+multi-entity family pattern from 5.3 — `SERGE LAFON` returning three registered
+entities in one commune — where picking one automatically would be a guess.
+
+**Not yet run.** Applying it is a decision: it writes SIREN onto ~17,500 rows and
+changes their qualification tier.
 
 ### Also outstanding (none block anything today)
 
