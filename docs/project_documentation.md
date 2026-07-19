@@ -895,8 +895,61 @@ BOISSIERE` (confident); `LA HOULERIE` → `GROUPEMENT AGRICOLE D EXPLOITATION`
 multi-entity family pattern from 5.3 — `SERGE LAFON` returning three registered
 entities in one commune — where picking one automatically would be a guess.
 
-**Not yet run.** Applying it is a decision: it writes SIREN onto ~17,500 rows and
-changes their qualification tier.
+### M1-S4b RUN AND COMPLETE (2026-07-19)
+
+`scripts/m1_s4b_siren_recovery.py`, confident matches only. **222.9 minutes,
+41,777 companies attempted, 18,568 SIRENs recovered (44.8%)** plus **150
+duplicates found by SIREN collision**.
+
+| Verdict | Count | Share |
+|---------|-------|-------|
+| `confident` (applied) | 18,718 | 44.8% |
+| `no_result` | 13,629 | 32.6% |
+| `weak` | 6,318 | 15.1% |
+| `probable` (left alone) | 2,209 | 5.3% |
+| `ambiguous` (left alone) | 903 | 2.2% |
+
+The 500-row sample predicted 42%; the full run delivered 44.8%. Sampling before
+committing to a 3.7-hour job was worth it, and the estimate held.
+
+**Companies with a SIREN: 44,772 → 63,340.**
+
+**Verified**, not assumed: 8 randomly sampled recovered SIRENs were re-queried
+against the live registry and all 8 resolved to an entity whose name matches ours
+after normalization. Several were word-order reversals (`BILAN GERARD` →
+`GERARD BILAN`, `BRETIJAN GAEC` → `GAEC BRETIJAN`), which is precisely what the
+token-sorting in the key exists to handle.
+
+**Collisions as deduplication.** 150 recovered SIRENs already belonged to another
+company. Because `staging.companies.siren` is UNIQUE, a naive write would have
+thrown; instead each collision was treated as evidence the two rows are the same
+business and marked `dedup_method = 'siren_recovery_collision'`. These are the
+most reliable duplicate links in the database — matched on a hard registry
+identifier rather than a name heuristic.
+
+**Reversible.** Every recovered SIREN carries `siren_recovered_at`:
+
+```sql
+UPDATE staging.companies
+   SET siren = NULL, siren_recovered_at = NULL, siren_recovery_method = NULL
+ WHERE siren_recovered_at IS NOT NULL;
+```
+
+**Follow-up chain not yet run.** Recovery wrote SIREN and nothing else. Three
+steps remain, in order — until they run, the 18,568 companies still sit in tier 2
+with no `naf_code`:
+
+1. `m1_s4_sirene_enrich.py` — newly-SIRENed rows have `sirene_last_checked_at`
+   NULL so they are picked up automatically. Multi-hour. **Now protected by the
+   exact-SIREN guard** added the same day.
+2. `m1_s5_qualify.py --force` — with `naf_code` present these rows move from
+   tier 2 to tier 1.
+3. `m1_s5b_dedup.py` — re-run to catch duplicates the new SIRENs expose.
+
+**Still without a SIREN: 64,776 companies.** Roughly half of the original
+no-SIREN population was never addressable (no valid 5-digit postal code), and
+32.6% of those attempted genuinely are not in the registry under that name and
+commune.
 
 ### Also outstanding (none block anything today)
 
