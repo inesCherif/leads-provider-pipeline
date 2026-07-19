@@ -691,9 +691,52 @@ records from this provider frequently reverse first/last name order between file
 **Also found**: the `pg_trgm` GIN index created in `001:118` is on
 `legal_name` — which is **NULL for 92% of tier-2 companies** (only 5,016 of 61,944
 have one). Tier 2 carries `trade_name` instead, on all 61,944 rows. So the one
-index built for fuzzy dedup does not cover the rows that actually need it. Any
-real dedup implementation needs an index on `trade_name`, or on a
-`coalesce(legal_name, trade_name)` expression.
+index built for fuzzy dedup does not cover the rows that actually need it.
+Migration 007 adds `idx_companies_trade_name_trgm` to close this.
+
+### 5.3 Duplicate Marking Applied (M1-S5b, 2026-07-19)
+
+`scripts/m1_s5b_dedup.py` + migrations 007/008. **4,274 companies marked as
+duplicates across 4,049 groups.** In the query view this collapses 98,979 company
+rows to **94,797 distinct businesses**.
+
+**Non-destructive by design.** Nothing is deleted or merged. A duplicate keeps all
+its data and gains `duplicate_of_company_id` pointing at its survivor;
+deduplication happens in the views via `coalesce(duplicate_of_company_id, id)`,
+exposed as `business_id`. The whole pass is undone with:
+
+```sql
+UPDATE staging.companies SET duplicate_of_company_id = NULL, dedup_checked_at = NULL;
+```
+
+**Why duplicates are kept in the view rather than filtered out.** 44 duplicate
+groups have an email on the duplicate that the survivor does **not** have.
+Filtering would have silently discarded those contacts. Measured before and after:
+reachable emails stayed at **14,578** — dedup collapsed identity without losing a
+single contact. 560 email-bearing contact rows sit on rows flagged `is_duplicate`.
+
+**Survivor selection**, in order: has a SIREN → has a `naf_code` → earliest
+`created_at` → lowest `id`. Deterministic, so re-runs are stable.
+
+**Word-order reversal is the interesting case.** The provider routinely flips
+first/last name between files, which is why the key sorts word tokens:
+
+| Survivor | Duplicate | Postal |
+|----------|-----------|--------|
+| `CHRISTIAN JUFFET` (SIREN 330045709) | `CHRISTIAN JUFFET` (none) | 01120 |
+| `FREDERIC MAGINIER` | `MAGINIER FREDERIC` | 01140 |
+| `GAEC DU CHARNAY` (SIREN 437660913) | `DU CHARNAY GAEC` | 01270 |
+| `GIBIER DOMBES` | `DOMBES GIBIER` | 01400 |
+
+**How to count correctly from now on**: `count(DISTINCT business_id)`.
+`count(DISTINCT siren)` returns 0 for all of tier 2, and
+`count(DISTINCT company_id)` double-counts duplicates.
+
+**Still not covered**: rows without a postal code (excluded from matching), and
+near-miss spelling variants — the trigram pass found 924 candidate pairs in tier 2
+that this exact-key method does not catch. `dedup_method` records
+`exact_name_postal` per row, so a fuzzy pass can be added later without redoing
+the confident matches.
 
 ---
 
@@ -952,14 +995,15 @@ documented gaps.
 
 ### The headline result
 
-**101,645 qualified rows — approximately 97,280 distinct businesses** once
-measured duplication is subtracted (see 5.2). Split 39,701 SIREN-verified
-(tier 1) and 61,944 label-qualified (tier 2), of which **14,578 have an email**
-and **101,262 have a phone**.
+**94,797 distinct qualified businesses**, deduplicated (see 5.3). Split 39,701
+SIREN-verified (tier 1) and 61,944 label-qualified (tier 2) before dedup
+collapses 4,274 duplicate rows. **14,578 reachable emails** across 14,127
+businesses, and phone coverage on essentially all of them.
 
-> Quote the deduplicated figure to the client, not the raw row count. At least
-> 4,365 rows are confirmed duplicates and the true number is higher, because
-> 12,715 rows lack the postal code needed to check them at all.
+> Quote **94,797**, not the 101,645 raw row count. Count with
+> `count(DISTINCT business_id)`. The real figure is slightly lower still: rows
+> without a postal code could not be duplicate-checked at all, and ~924 near-miss
+> spelling variants remain unmatched.
 
 The most consequential decision was tier 2. Following the original spec literally
 would have produced 39,701 qualified prospects and shelved 83,344 as `pending`.
@@ -971,10 +1015,10 @@ between a 39k and a 101k deliverable.
 
 Honest limits, so nobody over-promises to the client:
 
-- **Tier 2 is not deduplicated.** Fuzzy dedup was documented but never built.
-  Measured: **4,365 confirmed duplicates (4.9%)**, of which 2,990 groups span both
-  tiers — the same farm present once with a SIRET and once without. A campaign
-  drawing on both tiers will contact those farms twice. See 5.2.
+- **Dedup is now partial, not absent.** 4,274 exact-key duplicates are marked
+  (5.3), but ~924 near-miss spelling variants and every row without a postal code
+  remain unchecked. Count with `business_id`, and expect a small residue of
+  double-contacts.
 - **No email is verified.** All 25,506 are `candidate`. Verification is deliberately
   deferred to send time.
 - **Phone is the real channel.** 99.9% coverage versus 20% for email.
