@@ -100,6 +100,82 @@ PASSES = [
     ("stripped_legal_form", KEY_STRIPPED),
 ]
 
+# ─── Pass 3: fuzzy (pg_trgm), added 2026-07-20 ────────────────────────────────
+#
+# Closes the long-documented "pg_trgm fuzzy dedup does not exist" gap. Measured
+# before building: only 213 candidate pairs exist across BOTH tiers, not the
+# ~83k the docs implied. The exact passes had already done the heavy lifting.
+#
+# Catches near-misses the exact key cannot: a leading article or a typo.
+#   volailles de fontenai      <- les volailles de fontenai
+#   la ferme du xviieme siecle <- la ferme du xviie siecle
+#   les cochons du berger      <- les cochon du berger
+#
+# TWO GUARDS, both required:
+#   1. SAME PHONE. Name similarity alone is not evidence of duplication. Checked
+#      empirically: 'gamm vert' appears 15 times with 15 different phones — it is
+#      a national garden-centre chain, and merging those would delete 14 real
+#      prospects. Of the 213 candidate pairs only 160 share a phone; the other 53
+#      are left alone precisely because they may be distinct businesses.
+#   2. The SIREN guard, same as passes 1-2: different non-null SIRENs are
+#      different legal entities and are never merged.
+#
+# Threshold 0.85 is deliberately strict. Everything below it in the sample was
+# either a chain outlet or a genuinely different farm.
+FUZZY_SIMILARITY_MIN = 0.85
+
+FUZZY_CTE = """
+WITH one_site AS (
+    SELECT DISTINCT ON (co.id)
+           co.id, co.siren, co.naf_code, co.created_at,
+           btrim(s.postal_code) AS pc,
+           regexp_replace(unaccent(lower(coalesce(co.legal_name, co.trade_name))),
+                          '[^a-z0-9]+', ' ', 'g') AS nm,
+           (SELECT ct.phone_main FROM staging.contacts ct
+             WHERE ct.site_id = s.id AND ct.phone_main IS NOT NULL
+             LIMIT 1) AS phone
+    FROM staging.companies co
+    JOIN staging.sites s ON s.company_id = co.id
+    WHERE co.qualification_status IN ('qualified', 'qualified_unverified')
+      AND co.duplicate_of_company_id IS NULL
+      AND coalesce(co.legal_name, co.trade_name) IS NOT NULL
+      AND btrim(coalesce(s.postal_code, '')) <> ''
+    ORDER BY co.id, s.siret NULLS LAST, s.id
+),
+pairs AS (
+    SELECT a.id AS a_id, b.id AS b_id, a.siren AS a_siren, b.siren AS b_siren, a.pc,
+           -- survivor precedence, identical to passes 1-2: prefer a row that has
+           -- a SIREN, then one that has a NAF, then the oldest, then lowest id.
+           (ROW(a.siren IS NULL, a.naf_code IS NULL, a.created_at, a.id)
+          < ROW(b.siren IS NULL, b.naf_code IS NULL, b.created_at, b.id)) AS a_wins
+    FROM one_site a
+    JOIN one_site b
+      ON a.pc = b.pc
+     AND a.id < b.id
+     AND a.nm <> b.nm
+     AND a.phone IS NOT NULL
+     AND a.phone = b.phone                      -- GUARD 1
+     AND similarity(a.nm, b.nm) > {sim}
+),
+resolved AS (
+    SELECT CASE WHEN a_wins THEN a_id    ELSE b_id    END AS survivor_id,
+           CASE WHEN a_wins THEN b_id    ELSE a_id    END AS dup_id,
+           CASE WHEN a_wins THEN a_siren ELSE b_siren END AS survivor_siren,
+           CASE WHEN a_wins THEN b_siren ELSE a_siren END AS dup_siren,
+           pc
+    FROM pairs
+),
+marked AS (
+    SELECT DISTINCT ON (dup_id) *
+    FROM resolved
+    WHERE (dup_siren IS NULL OR dup_siren IS NOT DISTINCT FROM survivor_siren)  -- GUARD 2
+      -- never mark a row that is itself acting as a survivor: prevents a chain
+      -- A<-B<-C from pointing at an id that is already redirected elsewhere.
+      AND dup_id NOT IN (SELECT survivor_id FROM resolved)
+    ORDER BY dup_id, survivor_id
+)
+"""
+
 # Only ever considers rows not already marked, which is what makes this idempotent.
 CTE = """
 WITH one_site AS (
@@ -199,6 +275,51 @@ def apply_pass(cur, key_expr: str, method: str) -> int:
     return cur.rowcount
 
 
+def build_fuzzy(body: str) -> str:
+    return FUZZY_CTE.format(sim=FUZZY_SIMILARITY_MIN) + body
+
+
+def preview_fuzzy(cur) -> dict:
+    cur.execute(build_fuzzy("""
+        SELECT (SELECT count(*) FROM one_site)  AS considered,
+               (SELECT count(*) FROM pairs)     AS candidate_pairs,
+               (SELECT count(*) FROM marked)    AS would_mark,
+               (SELECT count(*) FROM resolved
+                 WHERE dup_siren IS NOT NULL
+                   AND dup_siren IS DISTINCT FROM survivor_siren) AS blocked_by_siren_guard
+    """))
+    considered, cand, would_mark, blocked = cur.fetchone()
+    return {"considered": considered, "candidate_pairs": cand,
+            "would_mark": would_mark, "blocked_by_siren_guard": blocked}
+
+
+def samples_fuzzy(cur, n: int = 4) -> list[tuple]:
+    cur.execute(build_fuzzy("""
+        SELECT m.pc,
+               coalesce(sv.siren,'---------') || ' ' || left(coalesce(sv.legal_name,sv.trade_name),30)
+                 || '   <-   ' ||
+               coalesce(dp.siren,'---------') || ' ' || left(coalesce(dp.legal_name,dp.trade_name),30) AS pair
+        FROM marked m
+        JOIN staging.companies dp ON dp.id = m.dup_id
+        JOIN staging.companies sv ON sv.id = m.survivor_id
+        ORDER BY m.pc LIMIT %(n)s
+    """), {"n": n})
+    return cur.fetchall()
+
+
+def apply_fuzzy(cur, method: str) -> int:
+    cur.execute(build_fuzzy("""
+        UPDATE staging.companies c
+        SET duplicate_of_company_id = m.survivor_id,
+            dedup_method            = %(method)s,
+            dedup_checked_at        = NOW()
+        FROM marked m
+        WHERE c.id = m.dup_id
+          AND c.duplicate_of_company_id IS NULL
+    """), {"method": method})
+    return cur.rowcount
+
+
 def write_audit(cur, results: list[dict]) -> None:
     cur.execute("""
         INSERT INTO audit.audit_log
@@ -240,6 +361,29 @@ def main() -> None:
                 marked = apply_pass(cur, key_expr, method)
                 log.info("  -> marked %s", f"{marked:,}")
                 results.append({"method": method, "marked": marked, **p})
+
+            # Pass 3 runs last so the exact passes have already collapsed the
+            # easy groups; fuzzy only ever sees what they could not match.
+            log.info("")
+            log.info("=== pass: fuzzy_name_postal_phone ===")
+            pf = preview_fuzzy(cur)
+            log.info("  unmarked rows considered : %s", f"{pf['considered']:,}")
+            log.info("  candidate pairs (sim>%.2f, same phone): %s",
+                     FUZZY_SIMILARITY_MIN, f"{pf['candidate_pairs']:,}")
+            log.info("  rows to mark             : %s", f"{pf['would_mark']:,}")
+            log.info("  blocked by SIREN guard   : %s  (different legal entities)",
+                     f"{pf['blocked_by_siren_guard']:,}")
+
+            for pc, pair in samples_fuzzy(cur):
+                log.info("    [%s] %s", pc, pair)
+
+            if not args.dry_run:
+                marked = apply_fuzzy(cur, "fuzzy_name_postal_phone")
+                log.info("  -> marked %s", f"{marked:,}")
+                results.append({"method": "fuzzy_name_postal_phone",
+                                "marked": marked, **pf})
+            else:
+                results.append({"method": "fuzzy_name_postal_phone", **pf})
 
             if args.dry_run:
                 conn.rollback()
