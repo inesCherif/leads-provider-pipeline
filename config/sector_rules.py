@@ -14,7 +14,7 @@ Editing a pattern without bumping the version leaves old verdicts in place.
 Current sector: agriculture / livestock (the pilot scope).
 """
 
-RULE_VERSION = "agri-v1"
+RULE_VERSION = "agri-v2"
 
 SECTOR = "agriculture_livestock"
 
@@ -35,6 +35,23 @@ NAF_PREFIXES_IN_SCOPE = ("01.", "02.", "03.")
 #   35.11Z — on-farm electricity producers: solar/biogas farms (253 rows)
 # Both are exactly the heavy-energy-consumer profile the client wants.
 NAF_RESCUE_CODES = ("68.20B", "35.11Z")
+
+# Prefix-matched rescue, added in agri-v2 (decided 2026-07-20). Same guard as
+# NAF_RESCUE_CODES: only qualifies when the source label is agricultural, so a
+# high-street bakery with no farm label stays out.
+#
+# The rescue criterion here is ENERGY INTENSITY, not "is it a farm". The client
+# sells energy efficiency, so on-farm transformation is exactly the target
+# profile — these run ovens, pasteurisers, cold rooms and fermentation tanks:
+#   10.*  food processing  (289 rows) — dairy/cheese, meat, bakery, fruit & veg
+#   11.*  beverages        (201 rows) — wine, cider, beer, spirits
+#   35.1* electricity      (7 rows)   — widens the existing exact 35.11Z rescue
+#
+# Deliberately NOT rescued, though they carry agricultural labels: riding
+# schools (85.51Z), sport (93.19Z), associations (94.99Z), farm gites (55.20Z),
+# garden retail (47.76Z), land holding (68.20A). Agritourism and leisure are not
+# heavy energy consumers; 68.20A is a holding shell, unlike 68.20B GFAs.
+NAF_RESCUE_PREFIXES = ("10.", "11.", "35.1")
 
 # Disqualified regardless of what the source label claims. Communes own farmland
 # and get labelled 'AGRICULTEURS' by the data provider, but a town hall is not a

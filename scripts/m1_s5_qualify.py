@@ -68,6 +68,7 @@ from config.sector_rules import (
     NAF_HARD_EXCLUDE,
     NAF_PREFIXES_IN_SCOPE,
     NAF_RESCUE_CODES,
+    NAF_RESCUE_PREFIXES,
     RULE_VERSION,
     SECTOR,
 )
@@ -94,6 +95,8 @@ log = logging.getLogger("m1_s5")
 #   2. hard-excluded NAF            — communes, regardless of source label
 #   3. NAF prefix in scope          — tier 1, covers NAF rév.1 and rév.2 alike
 #   4. rescue code + agri label     — GFAs and on-farm electricity producers
+#   4b. rescue prefix + agri label  — on-farm transformation (food, drink,
+#                                     electricity), added agri-v2
 #   5. any other official NAF       — out of scope
 #   6. has SIREN but no NAF         — SIRENE lookup failed, undecidable
 #   -- everything below has no SIREN --
@@ -125,6 +128,8 @@ classified AS (
                  AND naf LIKE ANY(%(prefixes)s)           THEN 'qualified|'
             WHEN naf = ANY(%(rescue)s)
                  AND is_agri_label                        THEN 'qualified|'
+            WHEN naf LIKE ANY(%(rescue_prefixes)s)
+                 AND is_agri_label                        THEN 'qualified|'
             WHEN naf IS NOT NULL                          THEN 'disqualified|naf_out_of_scope'
             WHEN siren IS NOT NULL                        THEN 'pending|sirene_not_found'
             WHEN naf_label IS NULL                        THEN 'pending|no_siren_no_label'
@@ -148,6 +153,7 @@ def rule_params() -> dict:
         "exclude": AGRI_EXCLUDE,
         "hard_exclude": list(NAF_HARD_EXCLUDE),
         "rescue": list(NAF_RESCUE_CODES),
+        "rescue_prefixes": [p + "%" for p in NAF_RESCUE_PREFIXES],
         "prefixes": [p + "%" for p in NAF_PREFIXES_IN_SCOPE],
         "rule_version": RULE_VERSION,
     }
