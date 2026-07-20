@@ -697,8 +697,17 @@ Migration 007 adds `idx_companies_trade_name_trgm` to close this.
 ### 5.3 Duplicate Marking Applied (M1-S5b, 2026-07-19)
 
 `scripts/m1_s5b_dedup.py` + migrations 007/008. **5,810 companies marked as
-duplicates** across two passes. In the query view this collapses 98,979 company
-rows to **93,284 distinct businesses**.
+duplicates** across two passes, plus 150 from SIREN collision in M1-S4b —
+**5,960 total**. In the query view this collapses to **91,721 distinct
+businesses** (see section 11).
+
+Re-run after the 2026-07-20 recovery chain marked **0 additional rows**. Both
+passes are name-based, so the 18,568 recovered SIRENs act only as a *guard*
+(they blocked 202 same-name/different-entity merges), never as a detector.
+SIREN-collision dedup happens inside `m1_s4b`, not here — and a direct check
+confirmed 0 unmarked SIREN collisions remain. The handoff's expectation that
+"new SIRENs expose duplicates the name key could not see" was wrong for this
+script.
 
 | Pass | Method | Marked | What it catches |
 |------|--------|--------|-----------------|
@@ -1121,14 +1130,24 @@ documented gaps.
 
 ### The headline result
 
-**93,284 distinct qualified businesses**, deduplicated (see 5.3). Split 39,701
-SIREN-verified (tier 1) and 61,944 label-qualified (tier 2) before dedup collapses
-5,810 duplicate rows. **14,578 reachable emails** across 14,005 businesses, and
-phone coverage on essentially all of them.
+**91,721 distinct qualified businesses** (updated 2026-07-20 after the recovery
+chain), deduplicated (see 5.3). Split **54,055** SIREN-verified (tier 1) and
+42,291 label-qualified (tier 2) by distinct business. **14,327 reachable emails**
+across 13,750 businesses, and phone coverage on essentially all of them.
 
-> Quote **93,284**, not the 101,645 raw row count. Count with
+> Quote **91,721**, not the 100,095 raw row count. Count with
 > `count(DISTINCT business_id)`. The real figure is slightly lower still: rows
 > without a postal code cannot be duplicate-checked at all.
+
+**The recovery chain did not grow the headline — it moved prospects up a tier
+and removed bad ones.** Enriching the 18,568 recovered SIRENs pushed 17,018 rows
+from tier 2 to tier 1 (raw counts 39,701 → 56,719, +43%), but also revealed
+1,550 rows whose newly-fetched NAF contradicted their agricultural label
+(communes, retail grocers, a "vinificateurs" row at `11.02B`). Those left the
+qualified pool, so distinct businesses went 93,284 → 91,721, a 1.7% *decrease*.
+This is a correction, not a loss: those businesses were previously going to be
+mailed as prospects on the strength of an unverified label. The chain's value is
+confidence, not volume.
 
 The most consequential decision was tier 2. Following the original spec literally
 would have produced 39,701 qualified prospects and shelved 83,344 as `pending`.
