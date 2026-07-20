@@ -7,10 +7,19 @@ Enriches staging.companies with official INSEE data via the public API:
 For each company with a SIREN that hasn't been enriched yet
 (sirene_last_checked_at IS NULL), we:
   1. Call the API
-  2. Extract: legal_name, naf_code, naf_label, legal_form,
+  2. Extract: legal_name, naf_code, legal_form,
               employee_bracket, creation_date, sirene_etat
   3. UPDATE staging.companies (only fill NULL fields — never overwrite)
   4. Mark sirene_last_checked_at = NOW()
+
+naf_label is deliberately NOT written here, and must not be. It holds the raw
+`Activite` string from the source Excel, and tier-2 qualification runs its
+AGRI_INCLUDE / AGRI_EXCLUDE regexes directly against it (m1_s5_qualify.py).
+Overwriting it with an official SIRENE label would silently change the verdict
+for every tier-2 row. The API returns `activite_principale` as a bare code with
+no label anyway. If the official label is ever wanted, add a SEPARATE column —
+do not repurpose this one. (An earlier version of this docstring claimed
+naf_label was extracted; it never was.)
 
 Design principles:
   - Idempotent: already-enriched rows (sirene_last_checked_at NOT NULL) are skipped

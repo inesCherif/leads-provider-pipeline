@@ -709,6 +709,31 @@ confirmed 0 unmarked SIREN collisions remain. The handoff's expectation that
 "new SIRENs expose duplicates the name key could not see" was wrong for this
 script.
 
+#### Pass 3: fuzzy, added 2026-07-20 — total marked now 6,051
+
+`fuzzy_name_postal_phone` closes the long-standing "pg_trgm fuzzy dedup does not
+exist" gap. **The gap was far smaller than this document previously claimed.**
+The old text said ~83k no-SIREN companies were undeduplicated; in fact the exact
+passes already covered them, and measurement found only **213 candidate pairs in
+the entire dataset**. 88 were marked.
+
+It catches what an exact key cannot — a leading article, a word-order swap, a
+typo: `YVES BEGUIN` ← `M BEGUIN YVES`, `EARL DE LA GOUTTIERE` ← `EARL LA
+GOUTTIERE`, `les cochons du berger` ← `les cochon du berger`.
+
+**Two guards, both required.** The SIREN guard as in passes 1–2, plus a
+**matching phone number**. The phone guard is load-bearing, not belt-and-braces:
+name similarity alone is not evidence of duplication. `gamm vert` appears 15
+times with 15 different phone numbers because it is a national garden-centre
+chain — a name-only rule would have merged 15 separate stores into one and
+deleted 14 real prospects. 53 of the 213 pairs differ on phone and are
+deliberately left alone.
+
+Related correction: the 427 same-name rows among no-postal tier-2 companies are
+**not** duplicates. Sampling showed `centre equestre` ×7, `earl` ×6, and bare
+surnames (`simon`, `hamon`, `marie`) — generic descriptors and missing data, each
+with its own phone number. Name collision without location is not duplication.
+
 | Pass | Method | Marked | What it catches |
 |------|--------|--------|-----------------|
 | 1 | `exact_name_postal` | 4,218 | Identical normalized name + postal |
@@ -1130,12 +1155,13 @@ documented gaps.
 
 ### The headline result
 
-**91,721 distinct qualified businesses** (updated 2026-07-20 after the recovery
-chain), deduplicated (see 5.3). Split **54,055** SIREN-verified (tier 1) and
-42,291 label-qualified (tier 2) by distinct business. **14,327 reachable emails**
-across 13,750 businesses, and phone coverage on essentially all of them.
+**91,955 distinct qualified businesses** (final, 2026-07-20 — after the recovery
+chain, the agri-v2 rescue and the fuzzy dedup pass), deduplicated (see 5.3).
+Split **54,391** SIREN-verified (tier 1) and 42,272 label-qualified (tier 2) by
+distinct business. **14,391 reachable emails**, and phone coverage on
+essentially all of them.
 
-> Quote **91,721**, not the 100,095 raw row count. Count with
+> Quote **91,955**, not the 100,441 raw row count. Count with
 > `count(DISTINCT business_id)`. The real figure is slightly lower still: rows
 > without a postal code cannot be duplicate-checked at all.
 
