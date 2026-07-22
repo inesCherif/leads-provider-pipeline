@@ -32,6 +32,9 @@ data/
 *.ods
 "Data Globale 05 juillet 2026"/
 
+# ── Client deliverables (M1-S8 export output — prospect data, never commit) ──
+exports/
+
 # ── Logs & reports ──────────────────────────────────────────────────────────
 logs/
 *.log
