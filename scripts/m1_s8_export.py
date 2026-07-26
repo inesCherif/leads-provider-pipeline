@@ -48,6 +48,7 @@ import argparse
 import csv
 import logging
 import os
+import re
 import sys
 import time
 from collections import Counter
@@ -101,6 +102,41 @@ TIER_LABEL = {
     "tier1_official_naf": "1 - NAF officiel (INSEE)",
     "tier2_source_label": "2 - libelle source",
 }
+
+# Columns Excel would silently corrupt if it guessed the type. SIRET is 14 digits
+# and becomes 4,47956E+13 as a number; postal codes and department codes lose their
+# leading zero. In .xlsx these are forced to text format; there is no equivalent
+# protection in CSV, which is why xlsx is the client-facing format.
+TEXT_COLUMNS = {"business_id", "siren", "siret", "naf_code",
+                "postal_code", "department_code", "phone_main"}
+
+
+# Control characters are illegal in the XML that .xlsx is built from, and openpyxl
+# hard-errors on them. They are present in the source Excel files — an address
+# reading "3 Av de Rivesaltes" carries an embedded control char that is invisible
+# in a text editor and that CSV passed through silently. Strip, don't fail: the
+# character is noise, and one bad address should not sink a 76k-row deliverable.
+ILLEGAL_XML = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def cell_value(row: dict, col: str) -> str:
+    """One row's value for one column, normalised for a human reader."""
+    return ILLEGAL_XML.sub("", _raw_value(row, col)).strip()
+
+
+def _raw_value(row: dict, col: str) -> str:
+    if col == "tier":
+        return TIER_LABEL.get(row["tier"], row["tier"] or "")
+    # NB: the legal_name -> trade_name fallback is NOT applied here. It is done in
+    # SQL as display_name ("Raison sociale"); "Denomination INSEE" stays strictly
+    # the official INSEE name and is blank where there is none, on purpose.
+    if col == "postal_code":
+        # French postal codes are always 5 digits; 1,508 rows arrived with the
+        # leading zero stripped upstream (01250 stored as 1250). Restore it — the
+        # same 4-digit repair migration 006 already does to derive department_code.
+        pc = (row.get("postal_code") or "").strip()
+        return pc.zfill(5) if pc.isdigit() and len(pc) == 4 else pc
+    return row.get(col) or ""
 
 # ─── Selection ────────────────────────────────────────────────────────────────
 # One query, two DISTINCT ON passes. Filters are applied AFTER collapsing so that
@@ -171,7 +207,19 @@ def connect(attempts: int = 4):
         sys.exit("SUPABASE_DB_URL not set in .env")
     for attempt in range(1, attempts + 1):
         try:
-            return psycopg2.connect(url)
+            # TCP keepalives are load-bearing here, not a nicety. The selection
+            # query runs for tens of seconds server-side while the client sends
+            # nothing, and the pooler (or the NAT in front of it) drops what looks
+            # like an idle SSL session — surfacing as 'SSL SYSCALL error: EOF
+            # detected' mid-execute. Keepalives hold the socket open. Same failure
+            # mode CLAUDE.md documents for m1_s4.
+            return psycopg2.connect(
+                url,
+                keepalives=1,
+                keepalives_idle=30,
+                keepalives_interval=10,
+                keepalives_count=5,
+            )
         except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
             if attempt == attempts:
                 raise
@@ -181,25 +229,91 @@ def connect(attempts: int = 4):
             time.sleep(wait)
 
 
-def fetch(conn, tier: str, departments: list[str] | None) -> list[dict]:
-    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-        cur.execute(SELECT_SQL, {"tier": TIER_ARG[tier], "departments": departments})
-        return [dict(r) for r in cur.fetchall()]
+def fetch(tier: str, departments: list[str] | None, attempts: int = 4) -> list[dict]:
+    """Run the selection, reconnecting if the pooler drops us mid-query.
+
+    Retrying the *connection* is not enough: this query scans ~100k rows and the
+    pooler will close an idle-looking SSL session part-way through with 'SSL
+    connection has been closed unexpectedly'. Observed 2026-07-22. The whole
+    fetch-and-reconnect has to be retryable, which is the fix CLAUDE.md still
+    lists as outstanding for m1_s4. Safe to retry blindly — this is read-only.
+    """
+    for attempt in range(1, attempts + 1):
+        conn = connect()
+        try:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(SELECT_SQL,
+                            {"tier": TIER_ARG[tier], "departments": departments})
+                return [dict(r) for r in cur.fetchall()]
+        except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
+            if attempt == attempts:
+                raise
+            wait = 5 * attempt
+            log.warning("Query attempt %d/%d dropped (%s) — reconnecting in %ds",
+                        attempt, attempts, str(e).strip().splitlines()[0], wait)
+            time.sleep(wait)
+        finally:
+            # The pooler has a limited slot count; psycopg2's context manager ends
+            # the transaction but never closes the connection.
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
-def write_csv(path: Path, rows: list[dict]) -> None:
-    # utf-8-sig, not utf-8. The data is full of French accents (EARL DES PRÉS) and
-    # the client opens these in Excel, which reads a BOM-less UTF-8 file as cp1252
-    # and renders every accent as mojibake. The BOM is what makes it open correctly.
+def write_csv(path: Path, rows: list[dict], delimiter: str = ";") -> None:
+    """CSV for systems and imports — NOT the client-facing format.
+
+    Two encoding traps, both hit in testing:
+      - utf-8-sig, not utf-8. The data is full of French accents (EARL DES PRÉS);
+        Excel reads a BOM-less UTF-8 file as cp1252 and renders them as mojibake.
+      - ';' not ',' as the delimiter. French/European Excel uses the semicolon as
+        its list separator, so a comma-delimited file opens with every row crammed
+        into column A. That is what a comma default looked like on 2026-07-22.
+
+    Even with both fixed, CSV cannot stop Excel retyping SIRET as 4,47956E+13 or
+    eating the leading zero on postal code 01250. Use xlsx for the client.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8-sig", newline="") as fh:
-        w = csv.writer(fh, quoting=csv.QUOTE_MINIMAL)
+        w = csv.writer(fh, delimiter=delimiter, quoting=csv.QUOTE_MINIMAL)
         w.writerow([header for _, header in COLUMNS])
         for r in rows:
-            w.writerow([
-                TIER_LABEL.get(r["tier"], r["tier"]) if col == "tier" else (r.get(col) or "")
-                for col, _ in COLUMNS
-            ])
+            w.writerow([cell_value(r, col) for col, _ in COLUMNS])
+
+
+def write_xlsx(path: Path, rows: list[dict]) -> None:
+    """Client-facing format. Identifier columns forced to text so Excel cannot
+    retype them; no delimiter to get wrong; header frozen and bolded."""
+    try:
+        from openpyxl import Workbook
+        from openpyxl.cell import WriteOnlyCell
+        from openpyxl.styles import Font
+    except ImportError:
+        sys.exit("openpyxl is required for --format xlsx\nRun: pip install openpyxl")
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # write_only keeps 76k rows off the heap; openpyxl is otherwise memory-hungry.
+    wb = Workbook(write_only=True)
+    ws = wb.create_sheet(title=SECTOR_SLUG[:31])
+    ws.freeze_panes = "A2"
+
+    head = []
+    for _, header in COLUMNS:
+        c = WriteOnlyCell(ws, value=header)
+        c.font = Font(bold=True)
+        head.append(c)
+    ws.append(head)
+
+    for r in rows:
+        out = []
+        for col, _ in COLUMNS:
+            c = WriteOnlyCell(ws, value=cell_value(r, col))
+            if col in TEXT_COLUMNS:
+                c.number_format = "@"
+            out.append(c)
+        ws.append(out)
+    wb.save(path)
 
 
 def report(rows: list[dict], email_rows: list[dict], phone_rows: list[dict],
@@ -241,6 +355,8 @@ def main() -> None:
                     help="1 = official NAF, 2 = source label only (default: both)")
     ap.add_argument("--department", metavar="34,30,12",
                     help="comma-separated department codes to keep")
+    ap.add_argument("--format", choices=["xlsx", "csv", "both"], default="xlsx",
+                    help="xlsx = client deliverable (default); csv = for systems")
     ap.add_argument("--limit", type=int, help="cap rows written, for spot checks")
     ap.add_argument("--dry-run", action="store_true",
                     help="report the counts, write no files")
@@ -253,13 +369,7 @@ def main() -> None:
         departments = [d.strip() for d in args.department.split(",") if d.strip()]
         log.info("Filtering to departments: %s", ", ".join(departments))
 
-    # psycopg2's context manager ends the transaction but does NOT close the
-    # connection, and the pooler has a limited slot count — close it explicitly.
-    conn = connect()
-    try:
-        rows = fetch(conn, args.tier, departments)
-    finally:
-        conn.close()
+    rows = fetch(args.tier, departments)
 
     if args.limit:
         rows = rows[: args.limit]
@@ -276,15 +386,17 @@ def main() -> None:
         return
 
     out_dir = Path(args.out_dir)
+    formats = ["xlsx", "csv"] if args.format == "both" else [args.format]
+    channels = [("email", email_rows), ("phone", phone_rows)]
+
     written = []
-    if args.channel in ("email", "both"):
-        p = out_dir / f"{SECTOR_SLUG}_email.csv"
-        write_csv(p, email_rows)
-        written.append((p, len(email_rows)))
-    if args.channel in ("phone", "both"):
-        p = out_dir / f"{SECTOR_SLUG}_phone.csv"
-        write_csv(p, phone_rows)
-        written.append((p, len(phone_rows)))
+    for name, subset in channels:
+        if args.channel not in (name, "both"):
+            continue
+        for fmt in formats:
+            p = out_dir / f"{SECTOR_SLUG}_{name}.{fmt}"
+            (write_xlsx if fmt == "xlsx" else write_csv)(p, subset)
+            written.append((p, len(subset)))
 
     for path, n in written:
         log.info("Wrote %s  (%d rows)", path, n)
