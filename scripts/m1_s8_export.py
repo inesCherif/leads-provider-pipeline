@@ -149,58 +149,23 @@ def _raw_value(row: dict, col: str) -> str:
     return row.get(col) or ""
 
 # ─── Selection ────────────────────────────────────────────────────────────────
-# One query, two DISTINCT ON passes. Filters are applied AFTER collapsing so that
-# --department never changes which entity represents a family: the family's chosen
-# entity is decided once, globally, then filtered. Deciding it per-filter would
-# make the same business appear under different SIRENs in different exports.
+# The two-pass collapse (best contact per business, then one entity per
+# multi-entity farmer family) lives in public.v_deliverable_businesses since
+# migration 012 — the M1-S9 enrichment steps need exactly the same population,
+# and re-implementing the collapse per script guarantees they drift apart.
+#
+# Filters are applied AFTER the collapse so that --department never changes which
+# entity represents a family: the representative is chosen once, globally, then
+# filtered. Choosing it per-filter would make the same business appear under
+# different SIRENs in different exports.
+#
+# (Do not write a literal percent sign in this SQL: psycopg2 reads it as a
+#  parameter placeholder even inside a comment, and the query dies with
+#  "TypeError: dict is not a sequence".)
 
 SELECT_SQL = """
-WITH per_business AS (
-    SELECT DISTINCT ON (business_id)
-        business_id, shared_address_group, tier,
-        siren, siret, legal_name, trade_name, naf_code, naf_label,
-        address_line1, postal_code, city, department_code,
-        full_name, job_title, phone_main, email_address,
-        source_status, source_closed
-    FROM public.v_qualified_contacts
-    WHERE NOT is_duplicate
-    ORDER BY
-        business_id,
-        -- A business with several sites: never let a site the source reported
-        -- closed represent it while a live one exists.
-        source_closed ASC,
-        (email_address IS NOT NULL) DESC,
-        (tier = 'tier1_official_naf') DESC,
-        email_verified DESC NULLS LAST,
-        -- the view exposes no contact_id, so tiebreak on the contact's own fields.
-        -- Two contacts tying on all four are identical for export purposes.
-        full_name NULLS LAST, email_address NULLS LAST, phone_main NULLS LAST
-),
-per_family AS (
-    SELECT DISTINCT ON (COALESCE(shared_address_group, business_id::text))
-        *
-    FROM per_business
-    ORDER BY
-        COALESCE(shared_address_group, business_id::text),
-        -- Same rule one level up: when a farmer's entities share an address and
-        -- one has closed, the live sibling is the one worth contacting.
-        source_closed ASC,
-        (email_address IS NOT NULL) DESC,
-        (tier = 'tier1_official_naf') DESC,
-        business_id
-)
-SELECT
-    *,
-    -- legal_name is only populated where SIRENE supplied it. 44,876 qualified rows
-    -- have none — every tier-2 row (no SIREN, so no official name) plus 7,700 tier-1
-    -- ones — but all of them carry the source Excel's trade_name. Exporting
-    -- legal_name alone ships a file blank in half its most important column.
-    -- (Do not write a literal percent sign anywhere in this SQL: psycopg2 reads it
-    --  as a parameter placeholder even inside a comment, and the query dies with
-    --  "TypeError: dict is not a sequence".)
-    -- Exactly 1 business in the whole dataset has neither.
-    COALESCE(NULLIF(btrim(legal_name), ''), trade_name) AS display_name
-FROM per_family
+SELECT *
+FROM public.v_deliverable_businesses
 WHERE (%(tier)s IS NULL OR tier = %(tier)s)
   AND (%(departments)s IS NULL OR department_code = ANY(%(departments)s))
   AND (NOT %(exclude_closed)s OR NOT source_closed)
