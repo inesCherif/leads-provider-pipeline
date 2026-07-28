@@ -83,6 +83,7 @@ COLUMNS = [
     ("siren",            "SIREN"),
     ("siret",            "SIRET"),
     ("display_name",     "Raison sociale"),
+    ("source_status",    "Statut"),
     ("legal_name",       "Denomination INSEE"),
     ("trade_name",       "Nom commercial"),
     ("naf_code",         "Code NAF"),
@@ -127,6 +128,15 @@ def cell_value(row: dict, col: str) -> str:
 def _raw_value(row: dict, col: str) -> str:
     if col == "tier":
         return TIER_LABEL.get(row["tier"], row["tier"] or "")
+    if col == "source_status":
+        # The source file's own verdict, recovered by m1_s9a. Uppercased when
+        # closed so it is impossible to miss while scrolling a 76k-row sheet.
+        # 'Non trouvé' and NULL both mean the provider could not confirm the
+        # business — say so plainly rather than leaving a blank cell.
+        st = (row.get("source_status") or "").strip()
+        if not st or st.lower().startswith(("non trouv", "introuvable")):
+            return "Non verifie"
+        return "FERME" if row.get("source_closed") else st
     # NB: the legal_name -> trade_name fallback is NOT applied here. It is done in
     # SQL as display_name ("Raison sociale"); "Denomination INSEE" stays strictly
     # the official INSEE name and is blank where there is none, on purpose.
@@ -150,11 +160,15 @@ WITH per_business AS (
         business_id, shared_address_group, tier,
         siren, siret, legal_name, trade_name, naf_code, naf_label,
         address_line1, postal_code, city, department_code,
-        full_name, job_title, phone_main, email_address
+        full_name, job_title, phone_main, email_address,
+        source_status, source_closed
     FROM public.v_qualified_contacts
     WHERE NOT is_duplicate
     ORDER BY
         business_id,
+        -- A business with several sites: never let a site the source reported
+        -- closed represent it while a live one exists.
+        source_closed ASC,
         (email_address IS NOT NULL) DESC,
         (tier = 'tier1_official_naf') DESC,
         email_verified DESC NULLS LAST,
@@ -168,6 +182,9 @@ per_family AS (
     FROM per_business
     ORDER BY
         COALESCE(shared_address_group, business_id::text),
+        -- Same rule one level up: when a farmer's entities share an address and
+        -- one has closed, the live sibling is the one worth contacting.
+        source_closed ASC,
         (email_address IS NOT NULL) DESC,
         (tier = 'tier1_official_naf') DESC,
         business_id
@@ -186,6 +203,7 @@ SELECT
 FROM per_family
 WHERE (%(tier)s IS NULL OR tier = %(tier)s)
   AND (%(departments)s IS NULL OR department_code = ANY(%(departments)s))
+  AND (NOT %(exclude_closed)s OR NOT source_closed)
 ORDER BY business_id
 """
 
@@ -229,7 +247,8 @@ def connect(attempts: int = 4):
             time.sleep(wait)
 
 
-def fetch(tier: str, departments: list[str] | None, attempts: int = 4) -> list[dict]:
+def fetch(tier: str, departments: list[str] | None,
+          exclude_closed: bool = False, attempts: int = 4) -> list[dict]:
     """Run the selection, reconnecting if the pooler drops us mid-query.
 
     Retrying the *connection* is not enough: this query scans ~100k rows and the
@@ -243,7 +262,8 @@ def fetch(tier: str, departments: list[str] | None, attempts: int = 4) -> list[d
         try:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 cur.execute(SELECT_SQL,
-                            {"tier": TIER_ARG[tier], "departments": departments})
+                            {"tier": TIER_ARG[tier], "departments": departments,
+                             "exclude_closed": exclude_closed})
                 return [dict(r) for r in cur.fetchall()]
         except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
             if attempt == attempts:
@@ -335,6 +355,18 @@ def report(rows: list[dict], email_rows: list[dict], phone_rows: list[dict],
         log.warning("Repeated email addresses       %7d  (same address on >1 business)",
                     dupe_addresses)
 
+    # Businesses the source file reported closed (recovered by m1_s9a). These are
+    # kept by default and flagged, not silently dropped — 'Fermé' is the data
+    # provider's verdict, not a registry check. Use --exclude-closed to drop them.
+    closed = sum(1 for r in rows if r.get("source_closed"))
+    unverified = sum(1 for r in rows if not (r.get("source_status") or "").strip())
+    if closed:
+        log.warning("Reported CLOSED by source      %7d  (flagged FERME; "
+                    "--exclude-closed drops them)", closed)
+        log.warning("  of which have an email       %7d  <- do not mail without review",
+                    sum(1 for r in rows if r.get("source_closed") and r["email_address"]))
+    log.info("Status not verifiable          %7d  (no SIRET to match on)", unverified)
+
     no_dept = sum(1 for r in rows if not r.get("department_code"))
     no_name = sum(1 for r in rows if not (r.get("full_name") or "").strip())
     log.info("Rows with no department        %7d  (geographic filtering is partial)", no_dept)
@@ -355,6 +387,9 @@ def main() -> None:
                     help="1 = official NAF, 2 = source label only (default: both)")
     ap.add_argument("--department", metavar="34,30,12",
                     help="comma-separated department codes to keep")
+    ap.add_argument("--exclude-closed", action="store_true",
+                    help="drop businesses the source file reported as closed "
+                         "(default: keep them, flagged FERME in the Statut column)")
     ap.add_argument("--format", choices=["xlsx", "csv", "both"], default="xlsx",
                     help="xlsx = client deliverable (default); csv = for systems")
     ap.add_argument("--limit", type=int, help="cap rows written, for spot checks")
@@ -369,7 +404,7 @@ def main() -> None:
         departments = [d.strip() for d in args.department.split(",") if d.strip()]
         log.info("Filtering to departments: %s", ", ".join(departments))
 
-    rows = fetch(args.tier, departments)
+    rows = fetch(args.tier, departments, exclude_closed=args.exclude_closed)
 
     if args.limit:
         rows = rows[: args.limit]

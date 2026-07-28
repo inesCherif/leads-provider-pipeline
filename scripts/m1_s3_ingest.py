@@ -56,7 +56,11 @@ COL_MAPS = {
         "Siret":                "siret",
         "Email":                "email_address",
         "Activite":             "naf_label",
-        "Statut_Entreprise":    "status_raw",
+        # This file's header is Statut_Activite, not Statut_Entreprise. The wrong
+        # name here made row.get() return None for all 54,198 rows, silently
+        # discarding 3,498 'Fermé' verdicts. Recovered from raw_json by
+        # m1_s9a_status_backfill.py — raw.ingest_rows is why that was possible.
+        "Statut_Activite":      "status_raw",
         "Nom_Officiel":         "legal_name",
     },
     "Copie de Eleveurs_verified (liste de toutes les eleveurs avec Siret ).xlsx": {
