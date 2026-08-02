@@ -308,6 +308,20 @@ def run(args) -> None:
     results: list[tuple[str, str, str]] = []   # (id, status, tool)
     by_domain: dict[str, list[tuple[str, str]]] = collections.defaultdict(list)
 
+    # Flush as we go. The full run takes ~40 minutes, and the pooler drops long
+    # sessions - S9-2 lost 3,318 rows to exactly this, doing all the work then
+    # one write at the end. Only DEFINITIVE verdicts are written; 'unknown'
+    # rows stay uncheckpointed so a later run (or one from a VPS with clean
+    # reverse-DNS) retries them.
+    state = {"cursor": 0, "written": 0}
+
+    def flush_new() -> None:
+        batch = [r for r in results[state["cursor"]:]
+                 if r[1] in ("valid", "invalid", "risky")]
+        state["cursor"] = len(results)
+        if batch and not args.dry_run:
+            state["written"] += flush(conn, cur, batch, args.dry_run)
+
     # ---- layer 1: syntax
     bad_syntax = 0
     for eid, addr, _ in targets:
@@ -329,6 +343,12 @@ def run(args) -> None:
             results.append((eid, "invalid", "s9g:no_mx"))
     log.info("  layer 2 MX         : %d domains have no MX -> %d addresses invalid",
              len(no_mx), sum(len(by_domain[d]) for d in no_mx))
+
+    # Syntax and MX verdicts are definitive and cost nothing to lose - bank
+    # them before the slow SMTP phase starts.
+    flush_new()
+    if state["written"]:
+        log.info("  banked %d verdicts from layers 1-2", state["written"])
 
     live = [d for d in domains if mx[d]]
 
@@ -372,10 +392,13 @@ def run(args) -> None:
                     if a in addr_to_id:
                         results.append((addr_to_id[a], status, tool))
                 done += 1
-                if done % 50 == 0:
+                if done % 25 == 0:
+                    flush_new()
                     rate = done / max(time.time() - started, 0.001)
-                    log.info("    %d/%d domains  %.1f dom/s", done,
-                             len(probe_me), rate)
+                    eta = (len(probe_me) - done) / max(rate, 0.001) / 60
+                    log.info("    %d/%d domains  %.1f dom/s  written=%d  "
+                             "ETA %.0f min",
+                             done, len(probe_me), rate, state["written"], eta)
 
     # ---- write
     counts = collections.Counter(s for _, s, _ in results)
@@ -408,7 +431,8 @@ def run(args) -> None:
         conn.close()
         return
 
-    written = flush(conn, cur, definitive, args.dry_run)
+    flush_new()                      # whatever the periodic flush did not cover
+    written = state["written"]
     log.info("  rows updated %d", written)
 
     cur.execute(AUDIT_SQL, (
