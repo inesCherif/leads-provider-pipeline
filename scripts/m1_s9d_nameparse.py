@@ -137,6 +137,45 @@ WHERE q.needs_name_parse
 ORDER BY q.business_id
 """
 
+# ─── Mode 2: split the client-supplied names ─────────────────────────────────
+# The source Excels only ever gave one combined string ("CROS SERGE"), so all
+# 74,499 client-supplied contacts have full_name but NULL first_name/last_name.
+# Splitting them is what lets a campaign write "Bonjour Serge" instead of
+# "Bonjour CROS SERGE", and it is the prerequisite for S9-7 candidate
+# generation across the whole base rather than just the 17,750 rows S9-1/S9-2
+# named.
+#
+# This mode writes ONLY first_name / last_name. It must not touch:
+#   - full_name    it is the client's value, and the export ships it
+#   - name_source  NULL is the marker meaning "client-supplied", and both
+#                  m1_s9c and this script's queue mode rely on that marker to
+#                  refuse to overwrite client data. Setting it here would
+#                  disarm that guard for every future step.
+TARGETS_CLIENT_SQL = """
+SELECT c.id, c.full_name
+FROM staging.contacts c
+WHERE c.name_source IS NULL
+  AND btrim(COALESCE(c.full_name, '')) <> ''
+  AND c.first_name IS NULL
+  AND c.last_name IS NULL
+ORDER BY c.id
+"""
+
+# Idempotent by construction: once first_name is set the row stops matching
+# TARGETS_CLIENT_SQL. The WHERE re-asserts the guards so a stale in-memory list
+# can never overwrite a row someone else has since filled.
+UPDATE_CLIENT_SQL = """
+UPDATE staging.contacts c
+SET first_name = v.first_name,
+    last_name  = v.last_name,
+    updated_at = NOW()
+FROM (VALUES %s) AS v(contact_id, first_name, last_name)
+WHERE c.id = v.contact_id::uuid
+  AND c.name_source IS NULL
+  AND c.first_name IS NULL
+  AND c.last_name IS NULL
+"""
+
 # SET-BASED, not one UPDATE per business. The first version of this script
 # issued 3,318 sequential UPDATEs on one connection; the Supabase pooler killed
 # the connection partway through and the whole transaction rolled back
@@ -255,9 +294,10 @@ def run(args) -> None:
         sys.exit("Gazetteer suspiciously small — has S9-1 run? Aborting rather "
                  "than writing a handful of low-coverage parses.")
 
-    cur.execute(TARGETS_SQL)
+    client_mode = args.mode == "client"
+    cur.execute(TARGETS_CLIENT_SQL if client_mode else TARGETS_SQL)
     targets = cur.fetchall()
-    log.info("Businesses needing a parsed name: %d", len(targets))
+    log.info("Mode '%s' — rows to consider: %d", args.mode, len(targets))
 
     stats = {"targets": len(targets), "parsed": 0, "rejected": 0,
              "rows_updated": 0}
@@ -276,8 +316,12 @@ def run(args) -> None:
             log.info("  %-55s -> %s / %s", (display_name or "")[:55], first, last)
             shown += 1
 
-        # full_name is "NOM PRENOM", matching the 74,499 names already in the base
-        rows.append((str(business_id), first, last, f"{last} {first}"))
+        if client_mode:
+            # full_name already exists and belongs to the client — never rewritten
+            rows.append((str(business_id), first, last))
+        else:
+            # full_name is "NOM PRENOM", matching the 74,499 names in the base
+            rows.append((str(business_id), first, last, f"{last} {first}"))
 
         if args.limit and not args.dry_run and stats["parsed"] >= args.limit:
             log.info("--limit reached, stopping")
@@ -298,10 +342,15 @@ def run(args) -> None:
         # psycopg2 issues one statement per page and cur.rowcount then reports
         # only the LAST page, which would silently under-report the write.
         CHUNK = 1000
+        sql = UPDATE_CLIENT_SQL if client_mode else UPDATE_CONTACT_SQL
         for i in range(0, len(rows), CHUNK):
             psycopg2.extras.execute_values(
-                cur, UPDATE_CONTACT_SQL, rows[i:i + CHUNK], page_size=CHUNK)
+                cur, sql, rows[i:i + CHUNK], page_size=CHUNK)
             stats["rows_updated"] += cur.rowcount
+            conn.commit()      # commit per chunk: keeps the transaction short so
+                               # the pooler never sees a long-lived session, and
+                               # a crash leaves completed chunks intact (every
+                               # write is guarded, so a re-run is still safe)
         log.info("  contact rows written  %6d", stats["rows_updated"])
     log.info("%s", "-" * 70)
 
@@ -312,27 +361,44 @@ def run(args) -> None:
         return
 
     cur.execute(AUDIT_SQL, (
-        json.dumps({"step": "S9-2", "script": SCRIPT_NAME,
+        json.dumps({"step": "S9-2", "mode": args.mode, "script": SCRIPT_NAME,
                     "gazetteer_size": len(gazetteer), **stats},
                    ensure_ascii=False),
         SCRIPT_NAME,
-        "S9-2 name parsing from business name, confident bucket only",
+        f"S9-2 name parsing ({args.mode} mode), confident bucket only",
     ))
     conn.commit()
 
-    cur.execute("SELECT count(*) FROM staging.contacts WHERE name_source = %s",
-                (NAME_SOURCE,))
-    total = cur.fetchone()[0]
-    cur.execute("SELECT count(*) FROM public.v_enrichment_queue WHERE needs_name_parse")
-    left = cur.fetchone()[0]
-    log.info("Verified in DB — named by this step: %d | still needing a parse: %d",
-             total, left)
+    if client_mode:
+        cur.execute("""
+            SELECT count(*) FILTER (WHERE first_name IS NOT NULL),
+                   count(*)
+            FROM staging.contacts
+            WHERE name_source IS NULL AND btrim(COALESCE(full_name,'')) <> ''
+        """)
+        split, total = cur.fetchone()
+        log.info("Verified in DB — client names split: %d of %d (%.1f%%)",
+                 split, total, 100.0 * split / total if total else 0)
+    else:
+        cur.execute("SELECT count(*) FROM staging.contacts WHERE name_source = %s",
+                    (NAME_SOURCE,))
+        total = cur.fetchone()[0]
+        cur.execute("SELECT count(*) FROM public.v_enrichment_queue "
+                    "WHERE needs_name_parse")
+        left = cur.fetchone()[0]
+        log.info("Verified in DB — named by this step: %d | still needing a parse: %d",
+                 total, left)
     conn.close()
 
 
 def main():
     ap = argparse.ArgumentParser(
         description="M1-S9-2: parse contact names from the business name")
+    ap.add_argument("--mode", choices=["queue", "client"], default="queue",
+                    help="queue: name the no-SIREN businesses that have nobody "
+                         "(writes first/last/full_name + name_source). "
+                         "client: split the existing client-supplied full_names "
+                         "into first/last only, touching nothing else.")
     ap.add_argument("--dry-run", action="store_true",
                     help="parse and report, write nothing")
     ap.add_argument("--limit", type=int, default=40,

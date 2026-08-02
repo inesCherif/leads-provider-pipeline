@@ -52,6 +52,7 @@ import re
 import sys
 import time
 from collections import Counter
+from datetime import date
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -86,13 +87,26 @@ COLUMNS = [
     ("source_status",    "Statut"),
     ("legal_name",       "Denomination INSEE"),
     ("trade_name",       "Nom commercial"),
+    # ── activity block, added 2026-08-02 for Sam's ask #2 (personalisation).
+    #    All four were already in the database since M1-S4; nothing new was
+    #    collected, they had simply never been exported.
+    ("legal_form",       "Forme juridique"),
+    ("creation_date",    "Date de creation"),
+    ("anciennete",       "Anciennete (ans)"),
+    ("employee_bracket", "Tranche effectif"),
     ("naf_code",         "Code NAF"),
     ("naf_label",        "Activite"),
     ("address_line1",    "Adresse"),
     ("postal_code",      "Code postal"),
     ("city",             "Ville"),
     ("department_code",  "Departement"),
+    # ── Prenom / Nom, added 2026-08-02. Until today first_name/last_name were
+    #    NULL on all 128k contacts (the source only ever gave one combined
+    #    string), so a mail-merge could only write "Bonjour CROS SERGE".
+    #    S9-1/S9-2 filled 71,747 of them.
     ("full_name",        "Contact"),
+    ("first_name",       "Prenom"),
+    ("last_name",        "Nom"),
     ("job_title",        "Fonction"),
     ("phone_main",       "Telephone"),
     ("email_address",    "Email"),
@@ -104,12 +118,40 @@ TIER_LABEL = {
     "tier2_source_label": "2 - libelle source",
 }
 
+# INSEE "tranche d'effectif salarié". The raw value is a 2-char code: shipping
+# '21' to a client means nothing, and it is NOT a headcount — 21 is 50-99
+# salaries, not 21 people. Exported as the official label.
+#
+# NOTE: the column comment in migrations/001 ("21=20-49") does not match the
+# official INSEE nomenclature and is wrong. This mapping is the official one.
+EFFECTIF_LABEL = {
+    "NN": "",                     # non renseigne
+    "00": "0 salarie",
+    "01": "1 a 2 salaries",
+    "02": "3 a 5 salaries",
+    "03": "6 a 9 salaries",
+    "11": "10 a 19 salaries",
+    "12": "20 a 49 salaries",
+    "21": "50 a 99 salaries",
+    "22": "100 a 199 salaries",
+    "31": "200 a 249 salaries",
+    "32": "250 a 499 salaries",
+    "41": "500 a 999 salaries",
+    "42": "1000 a 1999 salaries",
+    "51": "2000 a 4999 salaries",
+    "52": "5000 a 9999 salaries",
+    "53": "10000 salaries et plus",
+}
+
 # Columns Excel would silently corrupt if it guessed the type. SIRET is 14 digits
 # and becomes 4,47956E+13 as a number; postal codes and department codes lose their
 # leading zero. In .xlsx these are forced to text format; there is no equivalent
 # protection in CSV, which is why xlsx is the client-facing format.
+# creation_date is forced to text too: it is written DD/MM/YYYY for French
+# readers, and left as a date Excel can re-interpret it as MM/DD in another
+# locale — 01/08/1993 silently becoming 8 January.
 TEXT_COLUMNS = {"business_id", "siren", "siret", "naf_code",
-                "postal_code", "department_code", "phone_main"}
+                "postal_code", "department_code", "phone_main", "creation_date"}
 
 
 # Control characters are illegal in the XML that .xlsx is built from, and openpyxl
@@ -146,6 +188,21 @@ def _raw_value(row: dict, col: str) -> str:
         # same 4-digit repair migration 006 already does to derive department_code.
         pc = (row.get("postal_code") or "").strip()
         return pc.zfill(5) if pc.isdigit() and len(pc) == 4 else pc
+    if col == "employee_bracket":
+        # Never ship the raw INSEE code: '21' reads as a headcount and is not one.
+        code = (row.get("employee_bracket") or "").strip()
+        return EFFECTIF_LABEL.get(code, "")
+    if col == "creation_date":
+        d = row.get("creation_date")
+        return d.strftime("%d/%m/%Y") if d else ""      # FR order, for FR readers
+    if col == "anciennete":
+        # Years since creation. More directly usable in a pitch than a date
+        # ("exploitation depuis 32 ans"), and it is the form Sam asked for.
+        d = row.get("creation_date")
+        if not d:
+            return ""
+        years = (date.today() - d).days // 365
+        return str(years) if years >= 0 else ""
     return row.get(col) or ""
 
 # ─── Selection ────────────────────────────────────────────────────────────────
