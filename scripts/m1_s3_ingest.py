@@ -109,6 +109,30 @@ def normalize_status(raw) -> bool | None:
         return False
     return None
 
+# The source files contain 705 addresses whose domain has lost its dot —
+# 'x@gmailcom', 'y@orangefr'. Verified against raw_json 2026-08-02: the source
+# is like that, it is not an ingest bug. They are guaranteed hard bounces, and a
+# campaign opening with hundreds of bounces damages deliverability for every
+# valid address in the same send.
+#
+# Longest TLD first: 'com' must beat 'om'/'m', or gmailcom becomes gmailc.om.
+# 'me' is deliberately absent — any domain ending in the letters "me"
+# (fermelapomme) would be corrupted into fermelapom.me.
+# Existing rows were repaired by scripts/m1_s9e_email_repair.py.
+KNOWN_TLDS = ("coop", "info", "biz", "bzh", "com", "net", "org", "pro", "eu",
+              "fr", "be", "ch", "io")
+
+def repair_email_domain(address: str) -> str:
+    """Insert a missing dot before a recognised TLD. Returns input unchanged if
+    the domain already has a dot or the ending is not recognised — never guess."""
+    local, _, domain = address.partition("@")
+    if not local or not domain or "." in domain:
+        return address
+    for tld in KNOWN_TLDS:
+        if domain.endswith(tld) and len(domain) > len(tld):
+            return f"{local}@{domain[:-len(tld)]}.{tld}"
+    return address
+
 def clean_str(val) -> str | None:
     if val is None:
         return None
@@ -289,8 +313,9 @@ def process_file_bulk(conn, path: Path, config: dict, col_map: dict):
         email_unique = {}
         for n in normalized:
             if n.get("_contact_id") and n.get("email_address") and "@" in n["email_address"]:
-                key = (n["_contact_id"], n["email_address"].lower().strip())
-                email_unique[key] = (n["_contact_id"], n["email_address"].lower().strip(), True, 'candidate', source_file_id)
+                addr = repair_email_domain(n["email_address"].lower().strip())
+                key = (n["_contact_id"], addr)
+                email_unique[key] = (n["_contact_id"], addr, True, 'candidate', source_file_id)
                 
         email_values = list(email_unique.values())
         if email_values:
