@@ -85,6 +85,10 @@ COLUMNS = [
     ("siret",            "SIRET"),
     ("display_name",     "Raison sociale"),
     ("source_status",    "Statut"),
+    # REGISTRY signal, independent of Statut above. Measured 2026-08-02: 446
+    # businesses have a liquidator as their RNE officer and ZERO of them are
+    # flagged FERME by the provider — the source file still says they trade.
+    ("in_liquidation",   "Procedure collective"),
     ("legal_name",       "Denomination INSEE"),
     ("trade_name",       "Nom commercial"),
     # ── activity block, added 2026-08-02 for Sam's ask #2 (personalisation).
@@ -179,6 +183,10 @@ def _raw_value(row: dict, col: str) -> str:
         if not st or st.lower().startswith(("non trouv", "introuvable")):
             return "Non verifie"
         return "FERME" if row.get("source_closed") else st
+    if col == "in_liquidation":
+        # Blank rather than "Non" — a 90k-row sheet where a column is 99.5%
+        # "Non" trains the eye to skip it. Only the 446 that matter show text.
+        return "LIQUIDATION" if row.get("in_liquidation") else ""
     # NB: the legal_name -> trade_name fallback is NOT applied here. It is done in
     # SQL as display_name ("Raison sociale"); "Denomination INSEE" stays strictly
     # the official INSEE name and is blank where there is none, on purpose.
@@ -226,6 +234,7 @@ FROM public.v_deliverable_businesses
 WHERE (%(tier)s IS NULL OR tier = %(tier)s)
   AND (%(departments)s IS NULL OR department_code = ANY(%(departments)s))
   AND (NOT %(exclude_closed)s OR NOT source_closed)
+  AND (NOT %(exclude_liquidation)s OR NOT in_liquidation)
 ORDER BY business_id
 """
 
@@ -270,7 +279,8 @@ def connect(attempts: int = 4):
 
 
 def fetch(tier: str, departments: list[str] | None,
-          exclude_closed: bool = False, attempts: int = 4) -> list[dict]:
+          exclude_closed: bool = False, exclude_liquidation: bool = False,
+          attempts: int = 4) -> list[dict]:
     """Run the selection, reconnecting if the pooler drops us mid-query.
 
     Retrying the *connection* is not enough: this query scans ~100k rows and the
@@ -285,7 +295,8 @@ def fetch(tier: str, departments: list[str] | None,
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 cur.execute(SELECT_SQL,
                             {"tier": TIER_ARG[tier], "departments": departments,
-                             "exclude_closed": exclude_closed})
+                             "exclude_closed": exclude_closed,
+                             "exclude_liquidation": exclude_liquidation})
                 return [dict(r) for r in cur.fetchall()]
         except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
             if attempt == attempts:
@@ -389,6 +400,18 @@ def report(rows: list[dict], email_rows: list[dict], phone_rows: list[dict],
                     sum(1 for r in rows if r.get("source_closed") and r["email_address"]))
     log.info("Status not verifiable          %7d  (no SIRET to match on)", unverified)
 
+    # Independent REGISTRY signal (migration 017). Reported separately from
+    # FERME on purpose: measured overlap between the two is ZERO, so adding them
+    # is legitimate rather than double-counting.
+    liq = sum(1 for r in rows if r.get("in_liquidation"))
+    if liq:
+        log.warning("In LIQUIDATION per registry    %7d  (flagged; "
+                    "--exclude-liquidation drops them)", liq)
+        log.warning("  of which have an email       %7d  <- do not mail without review",
+                    sum(1 for r in rows if r.get("in_liquidation") and r["email_address"]))
+        log.warning("  NOT also flagged FERME       %7d  <- invisible before migration 017",
+                    sum(1 for r in rows if r.get("in_liquidation") and not r.get("source_closed")))
+
     no_dept = sum(1 for r in rows if not r.get("department_code"))
     no_name = sum(1 for r in rows if not (r.get("full_name") or "").strip())
     log.info("Rows with no department        %7d  (geographic filtering is partial)", no_dept)
@@ -409,6 +432,10 @@ def main() -> None:
                     help="1 = official NAF, 2 = source label only (default: both)")
     ap.add_argument("--department", metavar="34,30,12",
                     help="comma-separated department codes to keep")
+    ap.add_argument("--exclude-liquidation", action="store_true",
+                    help="drop businesses whose registry officer is a "
+                         "liquidator (default: keep them, flagged LIQUIDATION "
+                         "in the 'Procedure collective' column)")
     ap.add_argument("--exclude-closed", action="store_true",
                     help="drop businesses the source file reported as closed "
                          "(default: keep them, flagged FERME in the Statut column)")
@@ -426,7 +453,8 @@ def main() -> None:
         departments = [d.strip() for d in args.department.split(",") if d.strip()]
         log.info("Filtering to departments: %s", ", ".join(departments))
 
-    rows = fetch(args.tier, departments, exclude_closed=args.exclude_closed)
+    rows = fetch(args.tier, departments, exclude_closed=args.exclude_closed,
+                 exclude_liquidation=args.exclude_liquidation)
 
     if args.limit:
         rows = rows[: args.limit]
