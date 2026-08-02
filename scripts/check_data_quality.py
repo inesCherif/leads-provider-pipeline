@@ -133,6 +133,35 @@ CHECKS = [
         "LATERAL best-email pick assumes it.",
     ),
     (
+        "no email domain has a second domain welded onto it",
+        r"""SELECT count(*), string_agg(email_address, ', ')
+           FROM (SELECT email_address FROM staging.emails
+                 WHERE verification_status <> 'invalid'
+                   AND lower(split_part(email_address, '@', 2))
+                       ~ '\.(fr|com|net|org)[a-z]{2,}\.'
+                 LIMIT 20) x""",
+        lambda v: v == 0, "FAIL",
+        "S9-F, 2026-08-02: 91 addresses read orange.frnadoo.fr / "
+        "gmail.commail.fr. They pass the malformed-address check above because "
+        "they are syntactically valid, and several resolve to WILDCARDED "
+        "TYPOSQUAT domains with catch-all MX - so the mail is delivered to a "
+        "stranger rather than bounced. Test the domain, never the whole "
+        "address: French names like '.francois.' match this pattern in the "
+        "local part and over-count by 11%.",
+    ),
+    (
+        "no business ships an email we have marked invalid",
+        """SELECT count(*), string_agg(email_address, ', ')
+           FROM (SELECT email_address FROM public.v_deliverable_businesses
+                 WHERE email_status = 'invalid' LIMIT 20) x""",
+        lambda v: v == 0, "FAIL",
+        "Migration 015: the LATERAL best-email pick PREFERRED a valid address "
+        "but did not EXCLUDE an invalid one, so a contact whose only address "
+        "was invalid still shipped it. This is the regression test for that - "
+        "and a prerequisite for Phase 5 verification, which will mark "
+        "thousands invalid with no replacement to offer.",
+    ),
+    (
         "qualification rule_version is uniform across qualified rows",
         """SELECT count(DISTINCT qualification_rule_version),
                   string_agg(DISTINCT qualification_rule_version, ', ')
