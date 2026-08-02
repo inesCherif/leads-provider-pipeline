@@ -5,7 +5,7 @@ Replaces MillionVerifier, which now demands credits and a VAT number. This is
 what a paid verifier does internally, and all of it is free:
 
     1. syntax        malformed -> invalid
-    2. MX lookup     no mail server -> invalid          (100% coverage, free)
+    2. DNS           NXDOMAIN or null-MX -> invalid      (100% coverage, free)
     3. role/disposable classification                    (informational)
     4. SMTP RCPT TO  ask the server if the mailbox exists (needs port 25)
 
@@ -23,12 +23,17 @@ proxy has worse reputation than a home line. A cheap VPS with clean reverse-DNS
 would unblock roughly the 45% those providers hold.
 
 ⚠ THE RULE THAT MATTERS MOST
-    BEING BLOCKED IS NOT EVIDENCE THE MAILBOX IS BAD.
-    A refused connection, a timeout, a greylist 4xx and a catch-all 250 all mean
-    "we do not know" — they must never be written as 'invalid'. Only two things
-    justify 'invalid': broken syntax, or a definitive 5xx from a server that
-    demonstrably rejects unknown mailboxes. Getting this backwards would delete
-    thousands of good prospects on the strength of our own IP reputation.
+    OUR FAILURE IS NOT EVIDENCE THE MAILBOX IS BAD.
+    A refused connection, a DNS timeout, a greylist 4xx and a catch-all 250 all
+    mean "we do not know" — none may ever be written as 'invalid'. Only three
+    things justify it: broken syntax, a domain that provably does not exist
+    (NXDOMAIN) or refuses all mail (null MX), and a definitive 5xx from a server
+    that demonstrably rejects unknown mailboxes.
+
+    This is not theoretical. Ignoring it on 2026-08-02 marked **10,478 good
+    addresses invalid** and cut the deliverable from 13,433 emails to 8,042.
+    See `classify_domain` for the full post-mortem and the sanity gate that now
+    refuses to write when the numbers look impossible.
 
 CATCH-ALL DETECTION
     Many domains accept mail for any local part. A 250 from those means nothing,
@@ -102,7 +107,8 @@ HELO_NAME = os.getenv("VERIFY_HELO", "leadsprovider.fr")
 SMTP_TIMEOUT = 12          # seconds per SMTP operation
 MAX_RCPT_PER_CONN = 40     # reconnect after this many, so one session is never abusive
 SMTP_WORKERS = 8           # distinct DOMAINS probed at once; never 2 conns to one domain
-DNS_CONCURRENCY = 50
+DNS_CONCURRENCY = 12      # 50 overwhelmed the resolver and its failures were believed
+MAX_DEAD_DOMAIN_RATE = 0.20   # sanity ceiling; measured reality is 7-9%
 BATCH_SIZE = 500           # rows per DB flush
 
 VALID_SYNTAX = re.compile(r"^[^@\s]+@[^@\s]+\.[A-Za-z]{2,}$")
@@ -163,30 +169,78 @@ def get_conn():
 
 # ---------------------------------------------------------------- MX layer
 
-async def _mx_for(resolver, domain: str) -> list[str]:
+async def classify_domain(resolver, domain: str) -> tuple[str, list[str]]:
+    """Return (verdict, mx_hosts) where verdict is 'mail_ok' | 'dead' | 'unknown'.
+
+    ⚠ THIS FUNCTION EXISTS BECAUSE OF A REAL INCIDENT (2026-08-02).
+    The first version was `except Exception: return []`, and "no MX" was written
+    straight to 'invalid'. Resolving 4,097 domains at concurrency 50 overwhelmed
+    the resolver, timeouts came back as "no MX", and **10,478 perfectly good
+    addresses were marked invalid** - the deliverable fell from 13,433 emails to
+    8,042 before the run was killed and reverted. Two distinct bugs:
+
+      1. A DNS TIMEOUT IS OUR FAILURE, NOT THE DOMAIN'S. Only NXDOMAIN proves a
+         domain does not exist. SERVFAIL / timeout / NoNameservers mean "ask
+         again later" and must never produce a verdict.
+      2. NO MX DOES NOT MEAN NO MAIL. RFC 5321 §5.1: with no MX record, the A
+         record is an implicit mail exchanger. A domain with an A record and no
+         MX still accepts mail, so calling it dead is simply wrong.
+    """
     try:
         answers = await resolver.resolve(domain, "MX")
+        hosts = [h for _, h in sorted(
+            ((r.preference, str(r.exchange).rstrip(".")) for r in answers),
+            key=lambda t: t[0]) if h]
+        if hosts:
+            return "mail_ok", hosts
+        # Null MX (RFC 7505) is an explicit, deliberate refusal of all mail.
+        return "dead", []
+    except dns.resolver.NXDOMAIN:
+        return "dead", []                       # the only definitive negative
+    except dns.resolver.NoAnswer:
+        pass                                    # exists, no MX -> fall through to A
     except Exception:
-        return []
-    hosts = sorted(
-        ((r.preference, str(r.exchange).rstrip(".")) for r in answers),
-        key=lambda t: t[0],
-    )
-    # A null MX ('.', RFC 7505) is an explicit refusal to accept mail.
-    return [h for _, h in hosts if h]
+        return "unknown", []                    # timeout / SERVFAIL / no nameservers
+
+    # Implicit MX: an A record makes the host itself the mail exchanger.
+    try:
+        await resolver.resolve(domain, "A")
+        return "mail_ok", [domain]
+    except dns.resolver.NXDOMAIN:
+        return "dead", []
+    except dns.resolver.NoAnswer:
+        return "dead", []                       # exists but has neither MX nor A
+    except Exception:
+        return "unknown", []
 
 
-async def resolve_mx(domains: list[str]) -> dict[str, list[str]]:
+async def resolve_mx(domains: list[str]) -> dict[str, tuple[str, list[str]]]:
+    """Classify every domain, retrying the transient failures.
+
+    Concurrency is deliberately modest and retried: the incident above was
+    caused by hammering the resolver hard enough that it started failing, and
+    then believing its failures.
+    """
     resolver = dns.asyncresolver.Resolver()
-    resolver.lifetime = 6.0
-    resolver.timeout = 6.0
+    resolver.lifetime = 8.0
+    resolver.timeout = 8.0
     sem = asyncio.Semaphore(DNS_CONCURRENCY)
 
     async def one(d: str):
         async with sem:
-            return d, await _mx_for(resolver, d)
+            return d, await classify_domain(resolver, d)
 
-    return dict(await asyncio.gather(*[one(d) for d in domains]))
+    out = dict(await asyncio.gather(*[one(d) for d in domains]))
+
+    for attempt in (1, 2):
+        retry = [d for d, (v, _) in out.items() if v == "unknown"]
+        if not retry:
+            break
+        log.info("    retrying %d domains that failed to resolve (pass %d)",
+                 len(retry), attempt)
+        await asyncio.sleep(2 * attempt)
+        out.update(dict(await asyncio.gather(*[one(d) for d in retry])))
+    return out
 
 
 # -------------------------------------------------------------- SMTP layer
@@ -335,22 +389,47 @@ def run(args) -> None:
 
     # ---- layer 2: MX
     domains = sorted(by_domain)
-    log.info("  layer 2 MX         : resolving %d distinct domains...", len(domains))
-    mx = asyncio.run(resolve_mx(domains))
-    no_mx = [d for d in domains if not mx[d]]
-    for d in no_mx:
+    log.info("  layer 2 MX         : classifying %d distinct domains...", len(domains))
+    classified = asyncio.run(resolve_mx(domains))
+
+    dead = [d for d in domains if classified[d][0] == "dead"]
+    unresolved = [d for d in domains if classified[d][0] == "unknown"]
+    live = [d for d in domains if classified[d][0] == "mail_ok"]
+
+    dead_rate = len(dead) / max(len(domains), 1)
+    log.info("  layer 2 MX         : %d dead (%.1f%%), %d still unresolved, %d ok",
+             len(dead), 100 * dead_rate, len(unresolved), len(live))
+
+    # SANITY GATE. On 2026-08-02 a struggling resolver reported 46% of domains
+    # as having no MX and 10,478 good addresses were marked invalid before
+    # anyone noticed. Measured reality on this data is 7-9%. If the rate is
+    # wildly above that, DNS is broken - not half the internet - so refuse to
+    # write anything rather than corrupt the deliverable again.
+    if dead_rate > MAX_DEAD_DOMAIN_RATE:
+        conn.rollback()
+        conn.close()
+        sys.exit(
+            f"ABORT: {100 * dead_rate:.1f}% of domains classified dead, above "
+            f"the {100 * MAX_DEAD_DOMAIN_RATE:.0f}% sanity ceiling. Expected "
+            f"7-9%. This means DNS resolution is failing, not that the domains "
+            f"are gone. Nothing was written. Re-run when the network is calmer, "
+            f"or lower DNS_CONCURRENCY (currently {DNS_CONCURRENCY})."
+        )
+
+    for d in dead:
         for eid, _ in by_domain[d]:
-            results.append((eid, "invalid", "s9g:no_mx"))
-    log.info("  layer 2 MX         : %d domains have no MX -> %d addresses invalid",
-             len(no_mx), sum(len(by_domain[d]) for d in no_mx))
+            results.append((eid, "invalid", "s9g:domain_dead"))
+    # Domains DNS could not settle after retries get no verdict at all, so a
+    # later run picks them up again.
+    for d in unresolved:
+        for eid, _ in by_domain[d]:
+            results.append((eid, "unknown", "s9g:dns_unresolved"))
 
     # Syntax and MX verdicts are definitive and cost nothing to lose - bank
     # them before the slow SMTP phase starts.
     flush_new()
     if state["written"]:
         log.info("  banked %d verdicts from layers 1-2", state["written"])
-
-    live = [d for d in domains if mx[d]]
 
     # ---- layer 3: SMTP
     if args.skip_smtp:
@@ -377,7 +456,7 @@ def run(args) -> None:
             # One task per DOMAIN, so we never open two connections to the same
             # mail server at once — that is what gets an IP rate-limited.
             futures = {
-                pool.submit(probe_domain, d, mx[d], [a for _, a in by_domain[d]]): d
+                pool.submit(probe_domain, d, classified[d][1], [a for _, a in by_domain[d]]): d
                 for d in probe_me
             }
             for fut in as_completed(futures):
