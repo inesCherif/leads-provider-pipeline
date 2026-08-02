@@ -73,19 +73,59 @@ NAF_LABEL_FALLBACK = {
     None: None,
 }
 
+# INSEE "catégorie juridique" niveau III.
+#
+# ⚠ CORRECTED 2026-08-02. Four of the twelve original entries were WRONG, and a
+# wrong label is worse than a raw code because it reads as authoritative. Every
+# entry below was checked against the company names actually carrying it (a GAEC
+# is nearly always literally named "GAEC DE ..."), which is evidence, not memory:
+#
+#   6599 was "GAEC"          -> only 5 of 216 names were GAEC; it is Société civile
+#   6540 was "SARL agricole" -> 144 of 257 names start with SCI; it is SCI
+#   5202 was "SARL"          -> 18 names start with SNC, none with SARL; it is SNC
+#   6560 was "Groupement agricole" -> Société civile de moyens
+#
+# And the biggest gap: 6533 = GAEC covers 8,007 businesses (6,670 literally named
+# "GAEC ...") and was not mapped at all, so the client saw the digits "6533" on
+# the single most common French farm structure.
+#
+# Codes NOT listed here fall through as raw digits on purpose. An invented label
+# is a silent lie; a visible code is an obvious gap. Only add an entry you can
+# corroborate.
 LEGAL_FORM_CODES = {
+    # individuals and undivided ownership
     "1000": "Entrepreneur individuel",
     "2110": "Indivision",
-    "5202": "SARL",
-    "5498": "SA",
+    "2210": "Société créée de fait",
+    # commercial companies
+    "5202": "SNC",                       # was wrongly "SARL"
+    "5410": "SARL nationale",
+    "5458": "SARL coopérative agricole",
+    "5460": "SARL coopérative",
+    "5499": "SARL",                      # 1,610 businesses, previously unmapped
+    "5560": "SA à conseil d'administration",
+    "5599": "SA à conseil d'administration",
+    "5699": "SA à directoire",
     "5710": "SAS",
     "5720": "SASU",
+    "6220": "GIE",
+    # agricultural and civil structures — the ones that matter for this sector
+    "6316": "CUMA",                      # 58,  56 literally named "CUMA ..."
+    "6317": "Société coopérative agricole",
+    "6318": "Union de coopératives agricoles",
+    "6532": "Société civile d'attribution",
+    "6533": "GAEC",                      # 8,007 businesses, 6,670 named "GAEC ..."
+    "6534": "GFA",                       # 324,   224 named "GFA ..."
+    "6536": "Groupement forestier",      # 11,    named "GF ..." / "GFR ..."
+    "6540": "SCI",                       # was wrongly "SARL agricole"
+    "6560": "Société civile de moyens",  # was wrongly "Groupement agricole"
     "6597": "SCEA",
     "6598": "EARL",
-    "6599": "GAEC",
-    "6540": "SARL agricole",
-    "6560": "Groupement agricole",
-    "9210": "Association loi 1901",
+    "6599": "Société civile",            # was wrongly "GAEC"
+    # associations
+    "9210": "Association non déclarée",
+    "9220": "Association déclarée",
+    "9260": "Association de droit local",
 }
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
