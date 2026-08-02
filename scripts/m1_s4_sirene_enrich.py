@@ -203,13 +203,50 @@ def get_conn():
     url = os.getenv("SUPABASE_DB_URL")
     if not url:
         sys.exit("SUPABASE_DB_URL not set in .env")
-    return psycopg2.connect(url)
+    # Keepalives are load-bearing, not a nicety. This script holds one
+    # connection for a multi-hour run and used to die after ~3,000 rows with
+    # "server closed the connection unexpectedly" / "SSL SYSCALL error: EOF":
+    # the Supabase pooler drops sessions it considers idle, and a session
+    # waiting on a slow batch looks idle. Probe every 30s so it doesn't.
+    # (Same fix as m1_s8_export.py; this was the last script still missing it.)
+    return psycopg2.connect(url, keepalives=1, keepalives_idle=30,
+                            keepalives_interval=10, keepalives_count=5)
 
 
-def fetch_unenriched_batch(cur, limit_total: int | None, offset: int, batch_size: int) -> list[tuple]:
+def reconnect(conn):
+    """Replace a dead connection. Returns (conn, cur).
+
+    Idempotency is what makes this safe: every write is COALESCE-guarded and
+    gated on sirene_last_checked_at, so replaying a batch after a drop cannot
+    double-write or overwrite. Before this existed the run had to be babysat
+    with a shell retry loop — and a bash `for` loop exits 0 even when every
+    attempt failed, so its exit code proved nothing.
+    """
+    try:
+        conn.close()
+    except Exception:
+        pass
+    new = get_conn()
+    new.autocommit = False
+    return new, new.cursor()
+
+
+def fetch_unenriched_batch(cur, limit_total: int | None, offset: int,
+                           batch_size: int, dry_run: bool = False) -> list[tuple]:
     """
     Returns list of (company_id, siren) tuples not yet enriched.
     Respects --limit via limit_total.
+
+    A real run needs no OFFSET: each committed batch stamps
+    sirene_last_checked_at, so the processed rows stop matching and the same
+    query naturally returns the next slice.
+
+    A DRY RUN writes no checkpoint, so that self-advancing property disappears
+    and the identical 500 rows come back forever — the loop's exit condition
+    ("the query returned nothing") could never be reached. That is the
+    long-documented "--dry-run hangs without --limit" bug. Paginating with an
+    explicit OFFSET in dry-run mode gives the loop its own way to terminate,
+    independent of the side effect the flag disables.
     """
     effective_limit = batch_size
     if limit_total is not None:
@@ -219,15 +256,16 @@ def fetch_unenriched_batch(cur, limit_total: int | None, offset: int, batch_size
             return []
 
     cur.execute(
-        """
+        f"""
         SELECT id, siren
         FROM staging.companies
         WHERE siren IS NOT NULL
           AND sirene_last_checked_at IS NULL
         ORDER BY siren
         LIMIT %s
+        {"OFFSET %s" if dry_run else ""}
         """,
-        (effective_limit,),
+        (effective_limit, offset) if dry_run else (effective_limit,),
     )
     return cur.fetchall()
 
@@ -345,15 +383,32 @@ async def run(args):
 
     async with aiohttp.ClientSession(connector=connector) as session:
         while True:
-            batch = fetch_unenriched_batch(cur, limit_total, offset, BATCH_SIZE)
+            try:
+                batch = fetch_unenriched_batch(cur, limit_total, offset,
+                                               BATCH_SIZE, dry_run)
+            except psycopg2.OperationalError as exc:
+                log.warning("DB connection lost while fetching (%s) — reconnecting", exc)
+                conn, cur = reconnect(conn)
+                continue
             if not batch:
                 break
 
             batch_start = time.time()
-            enriched, not_found, errors = await enrich_batch(session, semaphore, batch, cur, dry_run)
-
-            if not dry_run:
-                conn.commit()
+            try:
+                enriched, not_found, errors = await enrich_batch(
+                    session, semaphore, batch, cur, dry_run)
+                if not dry_run:
+                    conn.commit()
+            except psycopg2.OperationalError as exc:
+                # The pooler dropped us mid-batch. Reconnect and REPLAY this
+                # batch: the uncommitted writes rolled back, and the checkpoint
+                # for those rows is therefore still NULL, so the next fetch
+                # returns them again. `continue` without advancing `offset` is
+                # deliberate.
+                log.warning("DB connection lost mid-batch (%s) — reconnecting "
+                            "and replaying this batch", exc)
+                conn, cur = reconnect(conn)
+                continue
 
             total_enriched  += enriched
             total_not_found += not_found

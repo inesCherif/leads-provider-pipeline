@@ -81,6 +81,70 @@ COL_MAPS = {
     },
 }
 
+# ─── Column contract ─────────────────────────────────────────────────────────
+# THE most expensive bug in this project's history was a typo here: COL_MAPS for
+# file A said "Statut_Entreprise" but the header is "Statut_Activite", so
+# row.get() returned None for all 54,198 rows and silently discarded 6,523
+# 'Fermé' verdicts. Exit code 0, correct row counts, every other column fine.
+# It surfaced two weeks later, from a business question, and was only
+# recoverable because raw.ingest_rows had kept the original JSON.
+#
+# A mapping is a CONTRACT with the source file. `.get()` with a default is the
+# right tool for optional data and exactly the wrong tool for a required
+# mapping, because it converts "the file changed shape" into "the column is
+# empty". Assert the contract instead: fail loudly, before writing anything.
+#
+# Columns whose absence must stop the import outright. Deliberately not every
+# mapped column — a file legitimately missing e.g. Phone_number should still
+# import; a file missing SIRET or the status flag should not.
+REQUIRED_COLUMNS = {
+    "Copie de agriculteurs total.xlsx": {
+        "Societe", "Adresse", "CP", "Ville", "Siret", "Email",
+        "Activite", "Statut_Activite",
+    },
+    "Copie de Eleveurs_verified (liste de toutes les eleveurs avec Siret ).xlsx": {
+        "Societe", "Adresse", "CP", "Ville", "Siret", "Siret_Verifie", "Email",
+        "Activite", "Statut_Activite",
+    },
+}
+
+
+def check_column_contract(path: Path, df, col_map: dict) -> None:
+    """Fail before writing if the file no longer has the shape we mapped.
+
+    Two distinct checks:
+      - REQUIRED missing  -> hard error. The import stops.
+      - MAPPED but absent -> hard error too, because a mapped column that is
+        not in the file is either a typo or a schema change, and both mean the
+        target field would silently import as NULL for every row.
+      - present but UNMAPPED -> warn only. New source columns are informational
+        (raw_json keeps them regardless), not a reason to refuse the import.
+    """
+    actual = set(df.columns)
+    required = REQUIRED_COLUMNS.get(path.name, set())
+
+    missing_required = required - actual
+    missing_mapped = set(col_map) - actual
+    problems = missing_required | missing_mapped
+
+    if problems:
+        raise SystemExit(
+            f"\nCOLUMN CONTRACT VIOLATION in {path.name}\n"
+            f"  mapped/required but NOT in the file: {sorted(problems)}\n"
+            f"  columns actually present           : {sorted(actual)}\n\n"
+            "  Refusing to import. A mapped column that is absent would import\n"
+            "  as NULL for every row without raising anything — that is exactly\n"
+            "  how 6,523 'Fermé' verdicts were lost on 2026-07-12.\n"
+            "  Fix COL_MAPS/REQUIRED_COLUMNS to match the file, then re-run."
+        )
+
+    unmapped = actual - set(col_map)
+    if unmapped:
+        print(f"  [note] {len(unmapped)} source column(s) not mapped "
+              f"(kept in raw_json): {sorted(unmapped)[:8]}"
+              f"{' …' if len(unmapped) > 8 else ''}")
+
+
 def sha256_file(path: Path) -> str:
     h = hashlib.sha256()
     with open(path, "rb") as f:
@@ -146,7 +210,15 @@ def clean_postal_code(val) -> str | None:
         if s.endswith("0") and len(s) > 5 and "." in str(val):
             # float conversion issue e.g. "59000.0" -> "590000" (already replaced dots)
             s = s[:5]
-        return s[:5]
+        s = s[:5]
+        # Restore the leading zero Excel ate: 01250 stored as the number 1250.
+        # 1,508 rows arrived 4-digit. This repair used to live in
+        # m1_s8_export.py, which meant every OTHER consumer — and the
+        # department_code derivation in migration 006 — had to redo it. Fixing
+        # it at the source is the correct place: one repair, everyone benefits.
+        if s.isdigit() and len(s) == 4:
+            s = s.zfill(5)
+        return s
     return None
 
 def get_conn():
@@ -163,7 +235,10 @@ def process_file_bulk(conn, path: Path, config: dict, col_map: dict):
 
     df = pd.read_excel(path, dtype=str, engine="calamine")
     df = df.where(df.notna(), other=None)
-    
+
+    # Contract check BEFORE any write, including before the raw landing.
+    check_column_contract(path, df, col_map)
+
     with conn.cursor() as cur:
         # Register file
         cur.execute("SELECT id FROM staging.source_files WHERE file_hash = %s", (file_hash,))

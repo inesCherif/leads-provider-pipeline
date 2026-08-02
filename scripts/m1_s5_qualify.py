@@ -71,6 +71,7 @@ from config.sector_rules import (
     NAF_RESCUE_PREFIXES,
     RULE_VERSION,
     SECTOR,
+    get_sector,
 )
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
@@ -105,10 +106,23 @@ log = logging.getLogger("m1_s5")
 #   9. agri label                   — tier 2
 #  10. anything else                — unrecognised label, undecidable
 
+# The sector filter is NOT optional and NOT a convenience.
+#
+# The stale-row selector is `qualification_rule_version IS DISTINCT FROM <v>`.
+# Without a sector scope, running sector B's pass would match every sector A row
+# (their version differs by definition) and silently re-classify 128k
+# agricultural companies against bakery rules. The join to source_files is what
+# makes a pass incapable of touching another sector's data.
+#
+# --force widens the row selector to "every row"; it must still be confined to
+# the sector, which is why the sector predicate sits in the base FROM and not in
+# {where_clause}.
 CLASSIFY_CTE = """
 WITH target AS (
-    SELECT id, siren, naf_code, naf_label, sirene_etat
-    FROM staging.companies
+    SELECT c.id, c.siren, c.naf_code, c.naf_label, c.sirene_etat
+    FROM staging.companies c
+    JOIN staging.source_files sf ON sf.id = c.source_file_id
+    WHERE sf.sector = ANY(%(source_sectors)s)
     {where_clause}
 ),
 flagged AS (
@@ -141,21 +155,25 @@ classified AS (
 )
 """
 
+# AND, not WHERE: the sector predicate above already opened the WHERE clause.
+# `IS DISTINCT FROM` rather than `<>` because NULL <> 'agri-v2' evaluates to
+# NULL, not TRUE, so a never-qualified row would not be selected.
 WHERE_STALE = """
-    WHERE qualified_at IS NULL
-       OR qualification_rule_version IS DISTINCT FROM %(rule_version)s
+      AND (c.qualified_at IS NULL
+           OR c.qualification_rule_version IS DISTINCT FROM %(rule_version)s)
 """
 
 
-def rule_params() -> dict:
+def rule_params(sector: dict) -> dict:
     return {
-        "include": AGRI_INCLUDE,
-        "exclude": AGRI_EXCLUDE,
-        "hard_exclude": list(NAF_HARD_EXCLUDE),
-        "rescue": list(NAF_RESCUE_CODES),
-        "rescue_prefixes": [p + "%" for p in NAF_RESCUE_PREFIXES],
-        "prefixes": [p + "%" for p in NAF_PREFIXES_IN_SCOPE],
-        "rule_version": RULE_VERSION,
+        "include":         sector["include"],
+        "exclude":         sector["exclude"],
+        "hard_exclude":    list(sector["naf_hard_exclude"]),
+        "rescue":          list(sector["naf_rescue_codes"]),
+        "rescue_prefixes": [p + "%" for p in sector["naf_rescue_prefixes"]],
+        "prefixes":        [p + "%" for p in sector["naf_prefixes_in_scope"]],
+        "rule_version":    sector["rule_version"],
+        "source_sectors":  list(sector["source_sectors"]),
     }
 
 
@@ -173,18 +191,19 @@ def get_conn():
     return psycopg2.connect(url)
 
 
-def count_stale(cur, force: bool) -> int:
-    if force:
-        cur.execute("SELECT count(*) FROM staging.companies")
-    else:
-        cur.execute(
-            "SELECT count(*) FROM staging.companies" + WHERE_STALE,
-            {"rule_version": RULE_VERSION},
-        )
+def count_stale(cur, force: bool, sector: dict) -> int:
+    # Sector-scoped in both branches: --force must mean "every row OF THIS
+    # SECTOR", never every row in the table.
+    base = """
+        SELECT count(*) FROM staging.companies c
+        JOIN staging.source_files sf ON sf.id = c.source_file_id
+        WHERE sf.sector = ANY(%(source_sectors)s)
+    """
+    cur.execute(base if force else base + WHERE_STALE, rule_params(sector))
     return cur.fetchone()[0]
 
 
-def projected_distribution(cur, force: bool) -> list[tuple]:
+def projected_distribution(cur, force: bool, sector: dict) -> list[tuple]:
     """Classify without writing. A single GROUP BY — cannot loop, cannot hang."""
     cur.execute(
         build_sql(
@@ -198,12 +217,12 @@ def projected_distribution(cur, force: bool) -> list[tuple]:
             """,
             force,
         ),
-        rule_params(),
+        rule_params(sector),
     )
     return cur.fetchall()
 
 
-def verdict_samples(cur, force: bool, per_bucket: int = 3) -> list[tuple]:
+def verdict_samples(cur, force: bool, sector: dict, per_bucket: int = 3) -> list[tuple]:
     """A few example companies per verdict, so the reasons can be eyeballed."""
     cur.execute(
         build_sql(
@@ -220,12 +239,12 @@ def verdict_samples(cur, force: bool, per_bucket: int = 3) -> list[tuple]:
             """,
             force,
         ),
-        {**rule_params(), "per_bucket": per_bucket},
+        {**rule_params(sector), "per_bucket": per_bucket},
     )
     return cur.fetchall()
 
 
-def apply_qualification(cur, force: bool) -> int:
+def apply_qualification(cur, force: bool, sector: dict) -> int:
     cur.execute(
         build_sql(
             """
@@ -239,16 +258,16 @@ def apply_qualification(cur, force: bool) -> int:
             """,
             force,
         ),
-        rule_params(),
+        rule_params(sector),
     )
     return cur.rowcount
 
 
-def write_audit(cur, counts: list[tuple], rows_updated: int, force: bool) -> None:
+def write_audit(cur, counts: list[tuple], rows_updated: int, force: bool, sector: dict) -> None:
     """One aggregate row per run. Row-level entries for 128k rows would be noise."""
     summary = {
-        "sector": SECTOR,
-        "rule_version": RULE_VERSION,
+        "sector": sector["key"],
+        "rule_version": sector["rule_version"],
         "rows_updated": rows_updated,
         "mode": "force" if force else "stale-only",
         "distribution": {
@@ -265,7 +284,8 @@ def write_audit(cur, counts: list[tuple], rows_updated: int, force: bool) -> Non
         (
             json.dumps(summary, ensure_ascii=False),
             "m1_s5_qualify.py",
-            f"Qualification pass, sector={SECTOR}, rule_version={RULE_VERSION}",
+            f"Qualification pass, sector={sector['key']}, "
+            f"rule_version={sector['rule_version']}",
         ),
     )
 
@@ -303,14 +323,19 @@ def report_samples(samples: list[tuple]) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="M1-S5 qualification pass")
+    ap.add_argument("--sector", default=None,
+                    help="which rule set to apply (default: the pilot sector). "
+                         "A pass can only ever touch its own sector's rows.")
     ap.add_argument("--dry-run", action="store_true",
                     help="show the projected distribution, write nothing")
     ap.add_argument("--force", action="store_true",
                     help="re-qualify every row, ignoring the stored rule version")
     args = ap.parse_args()
 
-    log.info("Sector       : %s", SECTOR)
-    log.info("Rule version : %s", RULE_VERSION)
+    sector = get_sector(args.sector)
+    log.info("Sector       : %s  (source_files.sector in %s)",
+             sector["key"], ", ".join(sector["source_sectors"]))
+    log.info("Rule version : %s", sector["rule_version"])
     log.info("Mode         : %s%s",
              "DRY-RUN (no writes)" if args.dry_run else "APPLY",
              " --force" if args.force else "")
@@ -319,26 +344,26 @@ def main() -> None:
     conn.autocommit = False
     try:
         with conn.cursor() as cur:
-            stale = count_stale(cur, args.force)
+            stale = count_stale(cur, args.force, sector)
             log.info("Rows to classify: %s", f"{stale:,}")
             if stale == 0:
                 log.info("Nothing to do - every row already carries rule_version=%s.",
-                         RULE_VERSION)
+                         sector["rule_version"])
                 log.info("Bump RULE_VERSION in config/sector_rules.py, or pass --force.")
                 return
 
-            counts = projected_distribution(cur, args.force)
+            counts = projected_distribution(cur, args.force, sector)
             report(counts, stale)
 
             if args.dry_run:
-                report_samples(verdict_samples(cur, args.force))
+                report_samples(verdict_samples(cur, args.force, sector))
                 log.info("")
                 log.info("DRY-RUN - nothing written. Re-run without --dry-run to apply.")
                 conn.rollback()
                 return
 
-            updated = apply_qualification(cur, args.force)
-            write_audit(cur, counts, updated, args.force)
+            updated = apply_qualification(cur, args.force, sector)
+            write_audit(cur, counts, updated, args.force, sector)
             conn.commit()
             log.info("")
             log.info("Applied: %s rows updated, 1 audit.audit_log row written.",

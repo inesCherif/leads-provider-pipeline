@@ -52,6 +52,7 @@ Usage:
 
 import argparse
 import json
+import re
 import logging
 import os
 import sys
@@ -86,12 +87,26 @@ SCRIPT_NAME = "m1_s9e_email_repair.py"
 KNOWN_TLDS = ["coop", "info", "biz", "bzh", "com", "net", "org", "pro", "eu",
               "fr", "be", "ch", "io"]
 
+# Exact-match lookup for provider domains the TLD rule cannot safely reach.
+# 'protonme' -> 'proton.me' is correct, but adding 'me' to KNOWN_TLDS would
+# corrupt any domain ending in those letters. A lookup table has no such
+# blast radius: it only ever fires on the exact string.
+KNOWN_PROVIDER_FIX = {
+    "protonme":     "proton.me",
+    "protonmailme": "protonmail.me",
+    "gmailco":      "gmail.com",
+    "orangef":      "orange.fr",
+}
+
+# Anything whose domain is not dotted, OR which contains whitespace, OR which
+# holds more than one address. All three defect classes are present in the
+# source and all three are guaranteed bounces if shipped.
 SELECT_SQL = """
 SELECT e.id, e.contact_id, e.email_address, e.source_file_id
 FROM staging.emails e
 WHERE e.email_address LIKE '%@%'
-  AND split_part(e.email_address, '@', 2) NOT LIKE '%.%'
   AND e.verification_status <> 'invalid'
+  AND e.email_address !~ '^[^@[:space:]]+@[^@[:space:]]+\\.[A-Za-z]{2,}$'
 ORDER BY e.id
 """
 
@@ -116,16 +131,52 @@ VALUES ('staging.emails', NULL, 'email_address', NULL, %s, %s, %s)
 """
 
 
-def repair(address: str) -> str | None:
-    """Insert the missing dot before a recognised TLD. None if not repairable."""
+VALID = re.compile(r"^[^@\s]+@[^@\s]+\.[A-Za-z]{2,}$")
+
+
+def _fix_domain(address: str) -> str:
+    """Insert the missing dot before a recognised TLD, or apply an exact
+    provider fix. Returns the input unchanged when nothing safe applies."""
     local, _, domain = address.partition("@")
     if not local or not domain or "." in domain:
-        return None
+        return address
     low = domain.lower()
+    if low in KNOWN_PROVIDER_FIX:
+        return f"{local}@{KNOWN_PROVIDER_FIX[low]}"
     for tld in KNOWN_TLDS:                      # KNOWN_TLDS is longest-first
         if low.endswith(tld) and len(low) > len(tld):
             return f"{local}@{low[:-len(tld)]}.{tld}"
-    return None
+    return address
+
+
+def repair(address: str) -> list[str]:
+    """Return every clean address recoverable from one source value.
+
+    Three defect classes, all present in the source data and all deterministic
+    to fix — no guessing:
+
+      whitespace   'hippodrome-carentan@orange .fr'  -> spaces removed
+                   'webmestre@union- agricole.fr'
+      two-in-one   'a@wanadoo.fr - b@gmail.com'      -> TWO addresses, both kept
+                   (staging.emails is multi-candidate by design, so there is no
+                   reason to discard the second person)
+      dotless TLD  'x@gmailcom'                      -> 'x@gmail.com'
+
+    Returns [] when nothing valid can be recovered WITHOUT guessing — e.g.
+    'lafermedubos@gmail.c' (truncated TLD: .com? .ch? .co?) and
+    '...@yahoo' (no TLD at all). Those stay flagged rather than invented.
+    """
+    # Split first: whitespace removal must not weld two addresses together.
+    parts = re.split(r"[;,]|\s+-\s+|\s{2,}", address)
+    out: list[str] = []
+    for part in parts:
+        cleaned = re.sub(r"\s+", "", part).strip().lower()
+        if not cleaned or "@" not in cleaned:
+            continue
+        cleaned = _fix_domain(cleaned)
+        if VALID.match(cleaned) and cleaned not in out:
+            out.append(cleaned)
+    return out
 
 
 def get_conn():
@@ -149,11 +200,15 @@ def run(args) -> None:
     to_insert, to_invalidate, unrepairable = [], [], []
     for email_id, contact_id, address, source_file_id in rows:
         fixed = repair(address)
-        if fixed is None:
+        if not fixed:
             unrepairable.append(address)
             continue
-        to_insert.append((str(contact_id), fixed, True, "candidate",
-                          str(source_file_id)))
+        # Only the first recovered address becomes primary; a second address in
+        # the same field is a real second person, kept as a non-primary
+        # candidate rather than discarded.
+        for i, addr in enumerate(fixed):
+            to_insert.append((str(contact_id), addr, i == 0, "candidate",
+                              str(source_file_id)))
         to_invalidate.append(email_id)
 
     log.info("  repairable            %6d", len(to_insert))

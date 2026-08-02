@@ -322,14 +322,38 @@ ALTER TABLE staging.emails          ENABLE ROW LEVEL SECURITY;
 ALTER TABLE raw.ingest_rows         ENABLE ROW LEVEL SECURITY;
 ALTER TABLE audit.audit_log         ENABLE ROW LEVEL SECURITY;
 
--- Temporary open policies (service role bypasses RLS anyway; restrict later)
-CREATE POLICY IF NOT EXISTS "service_role_all" ON staging.source_files FOR ALL USING (true);
-CREATE POLICY IF NOT EXISTS "service_role_all" ON staging.companies    FOR ALL USING (true);
-CREATE POLICY IF NOT EXISTS "service_role_all" ON staging.sites        FOR ALL USING (true);
-CREATE POLICY IF NOT EXISTS "service_role_all" ON staging.contacts     FOR ALL USING (true);
-CREATE POLICY IF NOT EXISTS "service_role_all" ON staging.emails       FOR ALL USING (true);
-CREATE POLICY IF NOT EXISTS "service_role_all" ON raw.ingest_rows      FOR ALL USING (true);
-CREATE POLICY IF NOT EXISTS "service_role_all" ON audit.audit_log      FOR ALL USING (true);
+-- Temporary open policies (service role bypasses RLS anyway; restrict later).
+--
+-- FIXED 2026-08-02. This block previously used `CREATE POLICY IF NOT EXISTS`,
+-- which is NOT valid PostgreSQL — Postgres supports IF NOT EXISTS on many
+-- object types but not on policies. The statement errored, so RLS ended up
+-- ENABLED on every table with ZERO policies. Nothing broke in practice (we
+-- connect as service_role, which bypasses RLS entirely), but it meant this
+-- migration could not be replayed on a fresh database — quietly breaking the
+-- "numbered migrations rebuild the schema" property the whole scheme relies on.
+--
+-- Idempotent the way Postgres actually supports: check the catalogue first.
+DO $$
+DECLARE r RECORD;
+BEGIN
+    FOR r IN SELECT * FROM (VALUES
+        ('staging','source_files'), ('staging','companies'), ('staging','sites'),
+        ('staging','contacts'),     ('staging','emails'),
+        ('raw','ingest_rows'),      ('audit','audit_log')
+    ) AS t(sch, tbl)
+    LOOP
+        IF NOT EXISTS (
+            SELECT 1 FROM pg_policies
+            WHERE schemaname = r.sch AND tablename = r.tbl
+              AND policyname = 'service_role_all'
+        ) THEN
+            EXECUTE format(
+                'CREATE POLICY "service_role_all" ON %I.%I FOR ALL USING (true)',
+                r.sch, r.tbl);
+        END IF;
+    END LOOP;
+END;
+$$;
 
 -- ---------------------------------------------------------------------------
 -- 8. Helper function: auto-update updated_at timestamp
