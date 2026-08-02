@@ -137,16 +137,29 @@ WHERE q.needs_name_parse
 ORDER BY q.business_id
 """
 
-# Identical guards to m1_s9c_dirigeants.py. See the module docstring.
+# SET-BASED, not one UPDATE per business. The first version of this script
+# issued 3,318 sequential UPDATEs on one connection; the Supabase pooler killed
+# the connection partway through and the whole transaction rolled back
+# (2026-08-02, zero rows written — the atomicity saved us from a half-applied
+# state, but the run was wasted). This is the same round-trip trap m1_s3_ingest
+# hit and fixed with execute_values; the lesson had simply not been carried into
+# a script whose row count looked "small".
+#
+# Guards are unchanged and still evaluated per row by the WHERE clause:
+#   - never touch a row that already has a name, or one we did not create
+#   - the NOT EXISTS skips companies where some OTHER contact is already named:
+#     naming the remaining blank row could flip which site represents the
+#     business in v_deliverable_businesses, whose tiebreak includes full_name
 UPDATE_CONTACT_SQL = """
 UPDATE staging.contacts c
-SET first_name         = %(first_name)s,
-    last_name          = %(last_name)s,
-    full_name          = %(full_name)s,
-    name_source        = %(name_source)s,
+SET first_name         = v.first_name,
+    last_name          = v.last_name,
+    full_name          = v.full_name,
+    name_source        = '""" + NAME_SOURCE + """',
     is_generic_contact = FALSE,
     updated_at         = NOW()
-WHERE c.company_id = %(company_id)s
+FROM (VALUES %s) AS v(company_id, first_name, last_name, full_name)
+WHERE c.company_id = v.company_id::uuid
   AND btrim(COALESCE(c.full_name, '')) = ''
   AND c.name_source IS NULL
   AND NOT EXISTS (
@@ -247,7 +260,8 @@ def run(args) -> None:
     log.info("Businesses needing a parsed name: %d", len(targets))
 
     stats = {"targets": len(targets), "parsed": 0, "rejected": 0,
-             "rows_updated": 0, "no_row_matched": 0}
+             "rows_updated": 0}
+    rows: list[tuple] = []
     shown = 0
 
     for business_id, display_name in targets:
@@ -262,22 +276,10 @@ def run(args) -> None:
             log.info("  %-55s -> %s / %s", (display_name or "")[:55], first, last)
             shown += 1
 
-        if args.dry_run:
-            continue
+        # full_name is "NOM PRENOM", matching the 74,499 names already in the base
+        rows.append((str(business_id), first, last, f"{last} {first}"))
 
-        cur.execute(UPDATE_CONTACT_SQL, {
-            "first_name":  first,
-            "last_name":   last,
-            "full_name":   f"{last} {first}",      # NOM PRENOM, matching the base
-            "name_source": NAME_SOURCE,
-            "company_id":  business_id,
-        })
-        if cur.rowcount:
-            stats["rows_updated"] += cur.rowcount
-        else:
-            stats["no_row_matched"] += 1
-
-        if args.limit and stats["parsed"] >= args.limit:
+        if args.limit and not args.dry_run and stats["parsed"] >= args.limit:
             log.info("--limit reached, stopping")
             break
 
@@ -286,9 +288,21 @@ def run(args) -> None:
     log.info("  parsed confidently    %6d  (%.1f%%)", stats["parsed"],
              100.0 * stats["parsed"] / stats["targets"] if stats["targets"] else 0)
     log.info("  rejected by the rule  %6d", stats["rejected"])
-    if not args.dry_run:
+
+    if not args.dry_run and rows:
+        # One statement per chunk instead of one per business. 3,318 rows go in
+        # a handful of round trips, so the transaction stays short enough that
+        # the pooler never sees a long-lived session.
+        #
+        # Chunked explicitly rather than via execute_values(page_size=...):
+        # psycopg2 issues one statement per page and cur.rowcount then reports
+        # only the LAST page, which would silently under-report the write.
+        CHUNK = 1000
+        for i in range(0, len(rows), CHUNK):
+            psycopg2.extras.execute_values(
+                cur, UPDATE_CONTACT_SQL, rows[i:i + CHUNK], page_size=CHUNK)
+            stats["rows_updated"] += cur.rowcount
         log.info("  contact rows written  %6d", stats["rows_updated"])
-        log.info("  no blank row to fill  %6d", stats["no_row_matched"])
     log.info("%s", "-" * 70)
 
     if args.dry_run:
