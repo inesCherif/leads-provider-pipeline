@@ -121,13 +121,56 @@ VALUES ('staging.directory_listings', NULL, 'scrape', NULL, %s, %s, %s)
 """
 
 
-def get_conn():
+def get_conn(attempts: int = 4):
     load_dotenv(PROJECT_ROOT / ".env")
     url = os.getenv("SUPABASE_DB_URL")
     if not url:
         sys.exit("SUPABASE_DB_URL not set in .env")
-    return psycopg2.connect(url, keepalives=1, keepalives_idle=30,
-                            keepalives_interval=10, keepalives_count=5)
+    last = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return psycopg2.connect(url, keepalives=1, keepalives_idle=30,
+                                    keepalives_interval=10, keepalives_count=5)
+        except (psycopg2.OperationalError, psycopg2.InterfaceError) as exc:
+            last = exc
+            log.warning("  connect attempt %d/%d failed (%s) — retrying in %ds",
+                        attempt, attempts, str(exc).strip()[:60], 3 * attempt)
+            time.sleep(3 * attempt)
+    raise last
+
+
+def flush_rows(rows: list[tuple]) -> int:
+    """Write a batch on a FRESH connection, then close it.
+
+    ⚠ THIS SHAPE EXISTS BECAUSE OF A REAL LOSS (2026-08-03).
+    The first version opened one connection at startup, held it IDLE for the
+    3.5 hours of scraping, and wrote everything at the end. The Supabase pooler
+    kills idle connections, so the run died on the final execute_values with
+    'server closed the connection unexpectedly' and **3,402 collected listings,
+    3,219 of them with an email, were lost.**
+
+    That is the third occurrence of this pattern in the project (S9-2 lost 3,318
+    rows the same way, and the S9-G verifier was corrected for it the day
+    before). The connection is now opened only to write and closed immediately,
+    so there is never an idle session to reap, and the caller flushes after
+    every page rather than at the end.
+    """
+    if not rows:
+        return 0
+    written = 0
+    conn = get_conn()
+    try:
+        conn.autocommit = False
+        cur = conn.cursor()
+        CHUNK = 200
+        for i in range(0, len(rows), CHUNK):
+            psycopg2.extras.execute_values(
+                cur, INSERT_SQL, rows[i:i + CHUNK], page_size=CHUNK)
+            written += cur.rowcount
+        conn.commit()
+    finally:
+        conn.close()
+    return written
 
 
 def clean_email(candidates: list[str]) -> str | None:
@@ -199,16 +242,19 @@ def parse_listing(page, path: str) -> dict | None:
 
 
 def run(args) -> None:
+    # Short-lived connection: read what we already have, then close it. No DB
+    # session is held open while the browser works — that is what killed the
+    # 2026-08-03 run.
     conn = get_conn()
-    conn.autocommit = False
     cur = conn.cursor()
-
     cur.execute("SELECT external_id FROM staging.directory_listings WHERE source=%s",
                 (SOURCE,))
     known = {r[0] for r in cur.fetchall()}
-    log.info("Already stored for %s: %d listings", SOURCE, len(known))
+    conn.close()
+    log.info("Already stored for %s: %d listings (resuming past these)",
+             SOURCE, len(known))
 
-    collected, stats = [], {"pages": 0, "seen": 0, "skipped": 0,
+    collected, stats = [], {"pages": 0, "seen": 0, "skipped": 0, "written": 0,
                             "with_email": 0, "with_contact": 0, "errors": 0}
     started = time.time()
 
@@ -262,10 +308,24 @@ def run(args) -> None:
                 collected.append(rec)
                 time.sleep(LISTING_DELAY)
 
+            # Bank this page before scraping the next one. A crash, a pooler
+            # reset or a Ctrl-C now costs at most one page, not the whole run.
+            if collected and not args.dry_run:
+                batch = [(SOURCE, r["external_id"], r["url"], r["business_name"],
+                          r["contact_name"], r["department_name"], r["commune"],
+                          r["email"], r["phone"], r["website"]) for r in collected]
+                try:
+                    stats["written"] += flush_rows(batch)
+                    collected.clear()
+                except Exception as exc:
+                    log.warning("  flush failed on page %d (%s) — keeping %d "
+                                "rows in memory for the next attempt",
+                                pno, str(exc).strip()[:60], len(collected))
+
             if pno % 5 == 0 or pno == args.pages:
                 rate = stats["seen"] / max(time.time() - started, 0.001)
-                log.info("  page %d/%d  listings=%d  new=%d  email=%d  %.1f/s",
-                         pno, args.pages, stats["seen"], len(collected),
+                log.info("  page %d/%d  listings=%d  written=%d  email=%d  %.1f/s",
+                         pno, args.pages, stats["seen"], stats["written"],
                          stats["with_email"], rate)
             time.sleep(PAGE_DELAY)
 
@@ -286,34 +346,35 @@ def run(args) -> None:
 
     if args.dry_run:
         log.info("DRY-RUN — nothing written.")
-        conn.rollback(); conn.close(); return
+        return
 
+    # Anything a per-page flush could not land (e.g. the pooler blipped on the
+    # last page) gets one more try here.
     if collected:
-        rows = [(SOURCE, r["external_id"], r["url"], r["business_name"],
-                 r["contact_name"], r["department_name"], r["commune"],
-                 r["email"], r["phone"], r["website"]) for r in collected]
-        written = 0
-        CHUNK = 200
-        for i in range(0, len(rows), CHUNK):
-            psycopg2.extras.execute_values(
-                cur, INSERT_SQL, rows[i:i + CHUNK], page_size=CHUNK)
-            written += cur.rowcount
-        log.info("  rows inserted %d", written)
+        batch = [(SOURCE, r["external_id"], r["url"], r["business_name"],
+                  r["contact_name"], r["department_name"], r["commune"],
+                  r["email"], r["phone"], r["website"]) for r in collected]
+        stats["written"] += flush_rows(batch)
+    log.info("  rows inserted (total) %d", stats["written"])
+
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
         cur.execute(AUDIT_SQL, (
             json.dumps({"step": "S9-J", "script": SCRIPT_NAME, "source": SOURCE,
-                        **stats, "inserted": written}, ensure_ascii=False),
+                        **stats}, ensure_ascii=False),
             SCRIPT_NAME,
             "Scrape bienvenue-a-la-ferme listings into staging.directory_listings "
             "(scrape only; matching is a separate step)",
         ))
         conn.commit()
-
-    cur.execute("""SELECT count(*), count(email), count(contact_name)
-                   FROM staging.directory_listings WHERE source=%s""", (SOURCE,))
-    tot, em, ct = cur.fetchone()
-    log.info("Verified — %s: %d listings stored, %d with an email, %d with a contact",
-             SOURCE, tot, em, ct)
-    conn.close()
+        cur.execute("""SELECT count(*), count(email), count(contact_name)
+                       FROM staging.directory_listings WHERE source=%s""", (SOURCE,))
+        tot, em, ct = cur.fetchone()
+        log.info("Verified — %s: %d listings stored, %d with an email, "
+                 "%d with a contact", SOURCE, tot, em, ct)
+    finally:
+        conn.close()
 
 
 def main() -> None:
