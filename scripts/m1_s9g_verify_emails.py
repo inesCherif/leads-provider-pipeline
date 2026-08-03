@@ -145,7 +145,14 @@ UPDATE_SQL = """
 UPDATE staging.emails AS e
 SET verification_status = v.status,
     verified_at         = NOW(),
-    verifier_tool       = v.tool
+    verifier_tool       = v.tool,
+    -- An address proven undeliverable must never hold the primary slot.
+    -- S9-E and S9-F already demote on invalidation; this step did not, so
+    -- after S9-K added a fresh primary to the same contact, 30 contacts ended
+    -- up with TWO primaries and check_data_quality assertion 10 failed. The
+    -- LATERAL best-email pick assumes that invariant.
+    is_primary          = CASE WHEN v.status = 'invalid' THEN FALSE
+                               ELSE e.is_primary END
 FROM (VALUES %s) AS v(id, status, tool)
 WHERE e.id = v.id::uuid
   AND e.verified_at IS NULL
