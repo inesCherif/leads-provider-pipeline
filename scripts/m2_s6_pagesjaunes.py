@@ -88,10 +88,11 @@ PAGE_DELAY = (3.0, 6.0)      # seconds between pages, randomised
 MAX_PAGES_PER_COMMUNE = 8    # PJ paginates ~20/page; 8 covers Marseille arrondissements
 NAV_TIMEOUT = 30_000
 
-FIELDNAMES = ["listing_id", "name", "phone", "website", "address",
-              "postcode", "city", "search_url"]
+FIELDNAMES = ["listing_id", "name", "phone", "mobile", "website", "address",
+              "postcode", "city", "category", "detail_url", "search_url"]
 
 PHONE_RE = re.compile(r"0[1-9](?:[\s.\-]?\d{2}){4}")
+NBSP = " "          # PJ prints numbers with non-breaking spaces
 AGGREGATORS = ("pagesjaunes", "pagespro", "google.", "facebook.", "instagram.",
                "tripadvisor", "ubereats", "deliveroo", "justeat", "petitfute",
                "yelp.", "mappy.", "linkedin.")
@@ -225,20 +226,50 @@ def extract_listings(page, search_url: str) -> list[dict]:
                 if name:
                     break
 
-        # Phone: the revealed fantomas div first, raw card text as fallback.
-        phone = ""
+        # Sam's extra columns: activity category + detail-page URL. The detail
+        # page often carries the shop's own website — a future email lever.
+        category = ""
+        for sel in (".bi-activity-unit", "[class*='activity-unit']"):
+            el = c.query_selector(sel)
+            if el:
+                category = " ".join((el.inner_text() or "").split())
+                if category:
+                    break
+        detail_url = ""
+        for sel in ("a.bi-denomination", "a[href*='/pros/']"):
+            el = c.query_selector(sel)
+            if el:
+                href = el.get_attribute("href") or ""
+                if href:
+                    detail_url = href if href.startswith("http") else BASE + href
+                    break
+
+        # Phones: the revealed fantomas div first, raw card text as the
+        # fallback. Sam's split: landline/09 -> phone, 06/07 -> mobile.
+        found = []
         for sel in ((f"#bi-fantomas-{lid}",) if lid else ()) + (
                 ".bi-fantomas .number-contact", ".number-contact"):
             el = c.query_selector(sel)
             if el:
-                m = PHONE_RE.search((el.inner_text() or "").replace(" ", " "))
-                if m:
-                    phone = re.sub(r"[\s.\-]", " ", m.group(0)).strip()
+                for m in PHONE_RE.finditer((el.inner_text() or "").replace(NBSP, " ")):
+                    p = re.sub(r"[\s.\-]", " ", m.group(0)).strip()
+                    if p not in found:
+                        found.append(p)
+                if found:
                     break
-        if not phone:
-            m = PHONE_RE.search(txt.replace(" ", " "))
-            if m:
-                phone = re.sub(r"[\s.\-]", " ", m.group(0)).strip()
+        if not found:
+            for m in PHONE_RE.finditer(txt.replace(NBSP, " ")):
+                p = re.sub(r"[\s.\-]", " ", m.group(0)).strip()
+                if p not in found:
+                    found.append(p)
+        landlines = [p for p in found if not p.startswith(("06", "07"))]
+        mobiles = [p for p in found if p.startswith(("06", "07"))]
+        phone = landlines[0] if landlines else (mobiles[0] if mobiles else "")
+        mobile = ""
+        if landlines and mobiles:
+            mobile = mobiles[0]
+        elif len(mobiles) > 1:
+            mobile = mobiles[1]
 
         website = ""
         for a in c.query_selector_all("a[href^='http']"):
@@ -263,8 +294,9 @@ def extract_listings(page, search_url: str) -> list[dict]:
         if not (phone or website):
             continue
         out.append({
-            "listing_id": lid, "name": name, "phone": phone, "website": website,
-            "address": addr, "postcode": postcode, "city": city,
+            "listing_id": lid, "name": name, "phone": phone, "mobile": mobile,
+            "website": website, "address": addr, "postcode": postcode,
+            "city": city, "category": category, "detail_url": detail_url,
             "search_url": search_url,
         })
     return out
