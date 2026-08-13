@@ -80,6 +80,15 @@ sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
 from scripts.m1_s8_export import ILLEGAL_XML            # noqa: E402
 from m2lib_contact import (normalize_fr_phone, is_surtaxe,  # noqa: E402
                            is_third_party_email)
+from m2_s8_websites import AGGREGATORS                  # noqa: E402
+
+
+def usable_site(url: str) -> bool:
+    """A directory, registry or social URL is never the shop's own site.
+    Maps lets a shop register its Instagram as its website, and OSM tags
+    sometimes carry a mappy POI link — V5's H18 gate caught 7 shipping."""
+    low = (url or "").lower()
+    return bool(low) and not any(a in low for a in AGGREGATORS)
 
 CHECK_DIR = PROJECT_ROOT / "exports" / "boulangerie" / "checkpoints"
 OUT_DIR   = PROJECT_ROOT / "exports" / "boulangerie"
@@ -227,8 +236,14 @@ def main() -> None:
         if m.get("phone"):
             srcs[s].add(src)
         if m.get("website") and s not in website:
-            website[s] = m["website"]
-            srcs[s].add(src)
+            low = m["website"].lower()
+            if "instagram.com" in low:
+                instagram.setdefault(s, m["website"])
+            elif "facebook.com" in low:
+                facebook.setdefault(s, m["website"])
+            elif usable_site(m["website"]):
+                website[s] = m["website"]
+                srcs[s].add(src)
         if m.get("facebook") and s not in facebook:
             facebook[s] = m["facebook"]
         if m.get("email"):
@@ -261,7 +276,7 @@ def main() -> None:
         conf = r.get("confiance") or "faible"
         cand[s].append((RANK.get((conf, v), 9), e, v, conf, "site"))
         srcs[s].add("site")
-        if r.get("domain") and s not in website:
+        if r.get("domain") and s not in website and usable_site(r["domain"]):
             website[s] = "https://" + r["domain"]
 
     for r in site_contacts:
@@ -275,7 +290,7 @@ def main() -> None:
                            ("linkedin", linkedin)):
             if r.get(key) and s not in store:
                 store[s] = r[key]
-        if r.get("domain") and s not in website:
+        if r.get("domain") and s not in website and usable_site(r["domain"]):
             website[s] = "https://" + r["domain"]
 
     for r in discovered:
@@ -284,8 +299,13 @@ def main() -> None:
         # 76% agreement with Maps — they go to the `piste` column, never to
         # `Telephone`. See the module docstring.
         if r.get("phone") and r.get("snippet_geo_ok"):
-            add_phone(s, r["phone"], "snippet")     # -> piste, never dialled
-        if r.get("website") and s not in website:
+            # When m2_s8 recorded WHICH result the phone came from (V5+), the
+            # witness is that domain — so a m2_s16 snippet from the same page
+            # correctly collapses to ONE witness instead of fake-corroborating.
+            # Old rows without phone_domain stay the opaque "snippet" witness.
+            src = f"serp/{r['phone_domain']}" if r.get("phone_domain") else "snippet"
+            add_phone(s, r["phone"], src)           # -> piste, never dialled
+        if r.get("website") and s not in website and usable_site(r["website"]):
             website[s] = r["website"]
             srcs[s].add("recherche")
         for key, store in (("facebook", facebook), ("instagram", instagram)):

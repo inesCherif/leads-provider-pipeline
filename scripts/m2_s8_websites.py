@@ -106,7 +106,8 @@ BAD_TLD = (".gouv.fr", ".gov", ".edu")
 
 FIELDNAMES = ["siret", "siren", "raison_sociale", "enseigne", "commune",
               "code_postal", "website", "rank", "query", "backend",
-              "phone", "facebook", "instagram", "snippet_geo_ok"]
+              "phone", "phone_domain", "facebook", "instagram",
+              "snippet_geo_ok"]
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)-7s %(message)s",
@@ -200,27 +201,41 @@ def main() -> None:
                 best = f"https://{d}"
                 break
 
-            # Snippet mining. The geo gate is the whole point: "Boulangerie
-            # Martin" exists in every French town, and a snippet phone without
-            # our commune/CP next to it may belong to any of them.
-            blob = " ".join(f"{res['title']} {res['snippet']} {res['url']}"
-                            for res in results)
-            geo_ok = (r["code_postal"] in blob) or (norm(r["commune"]) in norm(blob))
-            phones = extract_phones(blob) if geo_ok else set()
-            social = extract_social(blob)
+            # Snippet mining, PER RESULT. The geo gate is the whole point:
+            # "Boulangerie Martin" exists in every French town. V5's tuning
+            # showed a merged-blob gate is exactly the listing-page failure —
+            # one geo marker anywhere passes every phone on the page — so the
+            # gate and the phone must come from the SAME result. The result's
+            # domain is recorded: m2_s14's corroborator can then tell whether
+            # a second snippet witness is genuinely a different publisher.
+            phone_val, phone_domain, geo_ok = "", "", False
+            blob_all = " ".join(f"{res['title']} {res['snippet']} {res['url']}"
+                                for res in results)
+            for res in results:
+                rb = f"{res['title']} {res['snippet']} {res['url']}"
+                if not ((r["code_postal"] in rb) or (norm(r["commune"]) in norm(rb))):
+                    continue
+                geo_ok = True
+                ph = extract_phones(f"{res['title']} {res['snippet']}")
+                if ph and not phone_val:
+                    phone_val = sorted(ph)[0]
+                    phone_domain = urllib.parse.urlparse(res["url"]).netloc \
+                        .lower().replace("www.", "")
+            social = extract_social(blob_all)
 
-            if best or phones or social["facebook"] or social["instagram"]:
+            if best or phone_val or social["facebook"] or social["instagram"]:
                 flush({"siret": r["siret"], "siren": r["siren"],
                        "raison_sociale": r["raison_sociale"], "enseigne": r["enseigne"],
                        "commune": r["commune"], "code_postal": r["code_postal"],
                        "website": best, "rank": rank, "query": q,
                        "backend": args.backend,
-                       "phone": sorted(phones)[0] if phones else "",
+                       "phone": phone_val,
+                       "phone_domain": phone_domain,
                        "facebook": social["facebook"],
                        "instagram": social["instagram"],
                        "snippet_geo_ok": "oui" if geo_ok else ""})
                 found += bool(best)
-                snippet_phones += bool(phones)
+                snippet_phones += bool(phone_val)
             with DONE_PATH.open("a", encoding="utf-8") as f:
                 f.write(r["siret"] + "\n")
             if i % 25 == 0 or best:

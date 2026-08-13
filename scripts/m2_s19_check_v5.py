@@ -270,8 +270,15 @@ def main() -> None:
             regress.append(f"rows {len(prev)} -> {n}")
         if n_ph < p_ph:
             regress.append(f"phones {p_ph} -> {n_ph}")
-        if n_em < p_em:
-            regress.append(f"emails {p_em} -> {n_em}")
+        # Emails MAY drop by up to the measured V4 contamination: 56 of V4's
+        # 333 shipped addresses were aggregator-domain junk (55) or proven
+        # invalid (1) — measured 2026-08-13, 0 unexplained losses. Anything
+        # beyond that still fails hard.
+        if n_em < p_em - 60:
+            regress.append(f"emails {p_em} -> {n_em} (beyond the 56 measured junk)")
+        elif n_em < p_em:
+            log.info(f"        (emails {p_em} -> {n_em}: expected — 55 aggregator "
+                     "addresses and 1 proven-invalid were removed deliberately)")
         # Site count MAY legitimately fall in V5: the aggregator purge removed
         # junk "sites" like myboulange.fr sold as 97 bakeries' own pages. A
         # drop is reported, and anything beyond the purge's size still fails.
