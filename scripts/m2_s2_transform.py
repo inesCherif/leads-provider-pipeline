@@ -70,6 +70,11 @@ FIELDNAMES = [
     "forme_juridique", "date_creation", "anciennete_ans", "tranche_effectif",
     "naf_code", "activite", "adresse", "code_postal", "commune",
     "prenom", "nom", "fonction", "contact",
+    # Internal only — never exported to the client file. The registry geocodes
+    # every établissement, and OSM geocodes every listing, so a distance test
+    # is available as a matching key. Two bakeries can share a name in one
+    # commune; two points 30 m apart are the same shop.
+    "latitude", "longitude",
 ]
 
 logging.basicConfig(level=logging.INFO,
@@ -205,6 +210,8 @@ def main() -> None:
                     "nom": clean(nom),
                     "fonction": clean(fonction),
                     "contact": clean(contact),
+                    "latitude": e.get("latitude") or "",
+                    "longitude": e.get("longitude") or "",
                 })
 
     rows.sort(key=lambda r: (r["code_postal"], r["raison_sociale"], r["siret"]))
