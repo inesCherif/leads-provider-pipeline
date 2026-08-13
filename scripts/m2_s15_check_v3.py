@@ -57,6 +57,12 @@ COUNT_BAND = (1000, 2400)
 MIN_NAME_COVERAGE = 0.70
 PHONE_BAND = (0.30, 1.00)      # below 30% the sweep did not do its job
 REQUIRED_NON_EMPTY = ["Raison sociale", "Adresse", "Ville"]
+# Columns whose emptiness is a legitimate result, not a silent NULL:
+#   Telephone surtaxe — empty means no premium-rate number was found (good)
+#   Autres emails     — empty means nobody had a second address
+#   LinkedIn          — a neighbourhood bakery genuinely has no company page
+# Still printed when empty, so this exemption can never hide a data loss.
+MAY_BE_EMPTY = {"Telephone surtaxe", "Autres emails", "LinkedIn"}
 PHONE_FMT = re.compile(r"^0[1-9](?: \d{2}){4}$")
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -155,8 +161,15 @@ def main() -> None:
 
     # H6 — a mapped column that is empty on every row is the Statut_Activite
     # failure mode: the pipeline runs green and the column silently means nothing.
+    # Derived FLAG columns are exempted from the hard check, because empty is
+    # their good outcome (no premium-rate number found is a result, not a bug)
+    # — but they are still reported, so an exemption can never hide a real loss.
     empty_cols = [h for h in rows[0] if all(str(r[h]).strip() == "" for r in rows)]
-    hard(not empty_cols, "H6 no entirely-empty column", f"empty: {empty_cols}")
+    empty_hard = [h for h in empty_cols if h not in MAY_BE_EMPTY]
+    hard(not empty_hard, "H6 no entirely-empty source column", f"empty: {empty_hard}")
+    if set(empty_cols) & MAY_BE_EMPTY:
+        log.info(f"        (empty by design, allowed: "
+                 f"{sorted(set(empty_cols) & MAY_BE_EMPTY)})")
 
     # H7 — the check that only reading the workbook can make.
     text_cols = ["SIRET", "SIREN", "Code postal", "Date de creation", "Telephone"]
