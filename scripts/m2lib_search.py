@@ -140,6 +140,28 @@ def quota_state(path: Path = QUOTA_PATH) -> dict:
             for pool, lim in LIMITS.items()}
 
 
+def reset_pool(pool: str, path: Path = QUOTA_PATH) -> dict:
+    """Zero ONE pool's counter — for when a new API key brings a fresh
+    allowance (e.g. the fresh Tavily key of 2026-08-13). This is the only
+    sanctioned way to reset: it logs before/after and stamps the reset date
+    in the file, so the trail survives. Never hand-edit search_quota.json.
+    """
+    if pool not in LIMITS:
+        raise ValueError(f"unknown pool {pool!r} — one of {sorted(LIMITS)}")
+    q = _load_quota(path)
+    before = q.get(pool, {}).get("used", 0)
+    today = date.today()
+    entry = {"used": 0, "limit": LIMITS[pool], "reset_at": today.isoformat()}
+    if pool == "tavily":
+        entry["month"] = today.strftime("%Y-%m")
+    elif pool == "ddgs":
+        entry["day"] = today.isoformat()
+    q[pool] = entry
+    _save_quota(q, path)
+    log.info(f"pool '{pool}' reset: used {before} -> 0 / {LIMITS[pool]}")
+    return entry
+
+
 # ---------------------------------------------------- payload normalizers ---
 # Pure functions so --selftest can exercise them offline with canned JSON.
 # Normalized result shape (keys always present):
@@ -395,6 +417,16 @@ def selftest() -> int:
         _save_quota({"ddgs": {"used": 299, "limit": 300, "day": "2020-01-01"}}, qp)
         charge("ddgs", 1, qp)
         check("ddgs reset on new day", _load_quota(qp)["ddgs"]["used"], 1)
+        # --reset-pool: zeroes ONE pool, leaves the others untouched
+        _save_quota({"tavily": {"used": 1000, "limit": 1000, "month": "2026-08"},
+                     "serper": {"used": 2299, "limit": 2500}}, qp)
+        reset_pool("tavily", qp)
+        after = _load_quota(qp)
+        check("reset zeroes the pool", after["tavily"]["used"], 0)
+        check("reset stamps a date", "reset_at" in after["tavily"], True)
+        check("reset leaves other pools alone", after["serper"]["used"], 2299)
+        charge("tavily", 1, qp)
+        check("charging after reset counts from 0", _load_quota(qp)["tavily"]["used"], 1)
 
     print(f"\n{'ALL OK' if not failed else str(failed) + ' FAILED'}")
     return 1 if failed else 0
@@ -429,9 +461,17 @@ if __name__ == "__main__":
     ap.add_argument("--selftest", action="store_true", help="offline checks")
     ap.add_argument("--ping", action="store_true", help="1 real query per configured backend")
     ap.add_argument("--quota", action="store_true", help="show quota counters")
+    ap.add_argument("--reset-pool", metavar="POOL", choices=sorted(LIMITS),
+                    help="zero ONE pool's counter (use after installing a new "
+                         "API key that carries a fresh allowance)")
     args = ap.parse_args()
     if args.selftest:
         sys.exit(selftest())
+    if args.reset_pool:
+        reset_pool(args.reset_pool)
+        for pool, st in quota_state().items():
+            print(f"  {pool:<8} {st['used']}/{st['limit']}")
+        sys.exit(0)
     if args.ping:
         sys.exit(ping())
     if args.quota:

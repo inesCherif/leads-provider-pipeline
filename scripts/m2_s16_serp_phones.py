@@ -13,11 +13,21 @@ blocked site at all. That is what this script does, through `ddgs` — keyless,
 free, no account.
 
 WHAT THIS SCRIPT DOES NOT DO: decide. It writes candidate (siret, phone,
-source) rows to `serp_snippets.csv` and stops. A snippet phone was measured at
-only **76% agreement** with Google Maps, so it is never a dialable number on
-its own — `m2_s14_export_v3.py` ships it in the `Telephone piste` column, and
-promotes it only when a second INDEPENDENT source states the same number.
-This file is one of those independent sources.
+source) rows to `serp_snippets.csv` and stops. A snippet phone is never a
+dialable number on its own — `m2_s14_export_v3.py` ships it in the
+`Telephone piste` column, and promotes it only when a second INDEPENDENT
+source states the same number. This file is one of those independent sources.
+
+THE NAME GATE (measured 2026-08-13 on 37 businesses with a trusted Maps/OSM
+phone, tuned on 20, validated on a held-out 17): with only the geo gate,
+row-level agreement with the trusted phone was **32%** — a directory LISTING
+page ("all bakeries in Marseille") passes a commune geo gate for every bakery
+at once, so one business collected 10 candidates, and another business's real
+number was attributed to its neighbour. Requiring a business-name token in
+the result TITLE lifted candidates to 52%/53% (tune/holdout) and, decisive
+for the dialled column, the subset named by >=2 distinct domains — the only
+subset m2_s14 ever promotes — measured **86%/80%**. Loose candidates stay
+`piste`; corroboration does the deciding, as designed.
 
 Why per-engine provenance is recorded: two snippets from the same engine for
 the same query are not independent evidence, they are the same page read
@@ -68,6 +78,14 @@ FIELDNAMES = ["siret", "siren", "raison_sociale", "commune", "code_postal",
               "phone", "surtaxe", "engine", "snippet_domain", "geo_marker",
               "query"]
 
+# Tokens too generic to identify a bakery — a title match on one of these is
+# not a match on THIS business. (MAISON/FOURNIL/ATELIER repeat across town.)
+NAME_STOPWORDS = {
+    "BOULANGERIE", "PATISSERIE", "SARL", "SAS", "SASU", "EURL", "SNC",
+    "LA", "LE", "LES", "DE", "DU", "DES", "ET", "AU", "AUX",
+    "MAISON", "ATELIER", "FOURNIL", "MOULIN",
+}
+
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)-7s %(message)s",
                     datefmt="%H:%M:%S")
@@ -77,6 +95,15 @@ log = logging.getLogger("m2_s16")
 def norm(s: str) -> str:
     s = unicodedata.normalize("NFD", s or "").encode("ascii", "ignore").decode()
     return re.sub(r"[^A-Za-z0-9 ]+", " ", s).upper()
+
+
+def name_tokens(r: dict) -> set:
+    """Distinctive tokens of the business's name (enseigne + raison sociale)."""
+    toks = set()
+    for field in (r.get("enseigne", ""), r.get("raison_sociale", "")):
+        toks |= {t for t in norm(field).split()
+                 if len(t) >= 3 and t not in NAME_STOPWORDS}
+    return toks
 
 
 def load_done() -> set:
@@ -156,6 +183,7 @@ def main() -> None:
             seen_here = set()
             cp = r["code_postal"]
             commune_up = norm(r["commune"])
+            toks = name_tokens(r)
             for res in results:
                 # GEO GATE, per result — not across the whole page. A snippet
                 # for a same-named bakery in another town is exactly the error
@@ -168,6 +196,15 @@ def main() -> None:
                     geo = "commune"
                 if not geo:
                     stats["result rejected: no geo marker"] += 1
+                    continue
+                # NAME GATE, per result: a business-name token must appear in
+                # the result TITLE. A directory listing page titled
+                # "Boulangeries à Aix" passes the geo gate for every bakery in
+                # town and attributes every number to all of them — measured
+                # 32% agreement without this gate. A business whose name is
+                # all-generic (empty toks) falls back to geo-only.
+                if toks and not (toks & set(norm(res["title"]).split())):
+                    stats["result rejected: name not in title"] += 1
                     continue
                 dom = urllib.parse.urlparse(res["url"]).netloc.lower().replace("www.", "")
                 for p in extract_phones(blob):
