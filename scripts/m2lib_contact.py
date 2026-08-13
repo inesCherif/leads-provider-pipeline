@@ -182,6 +182,50 @@ def extract_social(html: str) -> dict:
     }
 
 
+# ------------------------------------------------------- third-party mail ---
+
+# Consumer mailboxes: a small bakery legitimately puts its personal gmail or
+# orange.fr address on its own site, so these are the shop's, not a stranger's.
+FREE_MAIL = {
+    "gmail.com", "googlemail.com", "orange.fr", "wanadoo.fr", "free.fr",
+    "sfr.fr", "neuf.fr", "laposte.net", "yahoo.fr", "yahoo.com", "hotmail.fr",
+    "hotmail.com", "outlook.fr", "outlook.com", "live.fr", "msn.com",
+    "bbox.fr", "aliceadsl.fr", "numericable.fr", "icloud.com", "me.com",
+    "protonmail.com", "proton.me", "gmx.fr", "aol.com", "club-internet.fr",
+}
+
+
+def _root(host: str) -> str:
+    """Registrable-ish root: shop.marius.fr -> marius.fr. Good enough here."""
+    parts = [p for p in (host or "").lower().replace("www.", "").split(".") if p]
+    if len(parts) <= 2:
+        return ".".join(parts)
+    # co.uk / com.fr style two-part suffixes are vanishingly rare in this data
+    return ".".join(parts[-2:])
+
+
+def is_third_party_email(email: str, crawled_domain: str) -> bool:
+    """True when this address belongs to somebody other than the site's owner.
+
+    Measured 2026-08-13 on the V3 crawl: harvesting every address on a page
+    collected `contact@pavailler.com` 24 times (a bakery OVEN MANUFACTURER
+    linked from footers), `societeinfo.com` 19 and `doctrine.fr` 14 (data
+    aggregators), plus `toogoodtogo.com` and a tourism office. Selling a
+    supplier's mailbox as the bakery's is the franchise-store-list bug with a
+    new coat: the address is real, it just is not *theirs*.
+
+    The rule that separates them: an address either shares the crawled site's
+    domain, or is a consumer mailbox. A DIFFERENT corporate domain on someone
+    else's website is someone else's company.
+    """
+    dom = (email or "").partition("@")[2].lower()
+    if not dom:
+        return True
+    if dom in FREE_MAIL:
+        return False
+    return _root(dom) != _root(crawled_domain)
+
+
 # -------------------------------------------------------------- selftest ----
 
 def selftest() -> int:
@@ -250,6 +294,17 @@ def selftest() -> int:
           extract_phones_ctx("<span>04 91 33 93 85</span>"), set())
     check("loose extract_phones still finds it (snippet use)",
           extract_phones("<span>04 91 33 93 85</span>"), {"04 91 33 93 85"})
+
+    print("is_third_party_email (the suppliers found on real bakery pages):")
+    check("own domain", is_third_party_email("contact@marius.fr", "marius.fr"), False)
+    check("own subdomain", is_third_party_email("a@shop.marius.fr", "marius.fr"), False)
+    check("gmail on own site", is_third_party_email("marius13@gmail.com", "marius.fr"), False)
+    check("orange on own site", is_third_party_email("x@orange.fr", "marius.fr"), False)
+    check("OVEN SUPPLIER", is_third_party_email("contact@pavailler.com", "marius.fr"), True)
+    check("aggregator", is_third_party_email("contact@societeinfo.com", "marius.fr"), True)
+    check("legal database", is_third_party_email("x@doctrine.fr", "marius.fr"), True)
+    check("delivery app", is_third_party_email("x@toogoodtogo.com", "marius.fr"), True)
+    check("no domain", is_third_party_email("broken", "marius.fr"), True)
 
     print("extract_social:")
     html = ('<a href="https://www.facebook.com/sharer/sharer.php?u=x">share</a>'

@@ -61,7 +61,8 @@ from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from m2lib_contact import extract_phones_ctx, extract_social, is_surtaxe  # noqa: E402
+from m2lib_contact import (extract_phones_ctx, extract_social,  # noqa: E402
+                           is_surtaxe, is_third_party_email)
 
 PROJECT_ROOT = Path(__file__).parent.parent
 CHECK_DIR = PROJECT_ROOT / "exports" / "boulangerie" / "checkpoints"
@@ -260,6 +261,11 @@ def main() -> None:
             html = resp.text
             pages_text += " " + html
             for e in extract_emails(html):
+                # A supplier's or aggregator's address in the footer is not
+                # this bakery's mailbox — see is_third_party_email().
+                if is_third_party_email(e, domain):
+                    stats["third_party_email_dropped"] += 1
+                    continue
                 emails.setdefault(e, url)
             for p in extract_phones_ctx(html):
                 phones.setdefault(p, url)

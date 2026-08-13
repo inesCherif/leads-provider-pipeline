@@ -78,7 +78,8 @@ sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
 
 from scripts.m1_s8_export import ILLEGAL_XML            # noqa: E402
-from m2lib_contact import normalize_fr_phone, is_surtaxe  # noqa: E402
+from m2lib_contact import (normalize_fr_phone, is_surtaxe,  # noqa: E402
+                           is_third_party_email)
 
 CHECK_DIR = PROJECT_ROOT / "exports" / "boulangerie" / "checkpoints"
 OUT_DIR   = PROJECT_ROOT / "exports" / "boulangerie"
@@ -230,8 +231,15 @@ def main() -> None:
             cand[s].append((RANK.get(("confirme", v), 9), e, v, "confirme", src))
             srcs[s].add(src)
 
+    n_third_party = 0
     for r in site_emails:
         s, e = r["siret"], r["email"].lower()
+        # Defence in depth: m2_s9 drops these at extraction, but checkpoints
+        # written before that guard existed are still on disk. One shared
+        # function, so the two call sites cannot drift apart.
+        if is_third_party_email(e, r.get("domain", "")):
+            n_third_party += 1
+            continue
         v = verified.get(e, "non verifie")
         conf = r.get("confiance") or "faible"
         cand[s].append((RANK.get((conf, v), 9), e, v, conf, "site"))
@@ -352,6 +360,7 @@ def main() -> None:
     log.info(f"  email verdicts: {dict(Counter(r['email_statut'] for r in rows if r['email']))}")
     log.info(f"  email confiance: {dict(Counter(r['email_confiance'] for r in rows if r['email']))}")
     log.info(f"  addresses withheld as proven-invalid: {n_blocked}")
+    log.info(f"  third-party addresses dropped (suppliers/aggregators): {n_third_party}")
     log.info(f"written -> {xlsx}")
     log.info(f"written -> {csv_path}")
     log.info("Next: python scripts/m2_s15_check_v3.py --strict")
