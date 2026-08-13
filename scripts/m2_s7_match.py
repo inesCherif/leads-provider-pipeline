@@ -53,8 +53,9 @@ OUT_PATH  = CHECK_DIR / "matched.csv"
 # Listing sources: (filename, source label). Missing files are skipped with a
 # notice — this script must run before every harvester exists.
 SOURCES = [
-    ("osm_listings.csv", "osm"),
-    ("pj_listings.csv",  "pagesjaunes"),
+    ("osm_listings.csv",    "osm"),
+    ("pj_listings.csv",     "pagesjaunes"),
+    ("places_listings.csv", "serper_places"),   # m2_s13 Google Maps sweep
 ]
 
 GEO_STRICT_M = 40.0    # same point, names may differ (rename/rebrand)

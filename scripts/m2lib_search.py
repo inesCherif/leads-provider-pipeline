@@ -7,9 +7,14 @@ CAPTCHA on Brave after ~85 queries, 403 on DDG lite/Mojeek, a stale Bing
 recipe. More delays on a blocked IP change nothing. The V3 answer is
 official APIs with free tiers that need no credit card:
 
-    serper_places  Serper.dev  2,500 credits ONE-TIME (account-wide)
-                   Google Maps listings incl. PHONE NUMBERS — the unlock
-    serper_web     Serper.dev  same credit pool, Google organic results
+    serper_maps    Serper.dev  2,500 credits ONE-TIME (account-wide),
+                   *3 credits per call* — Google Maps listings incl. PHONE
+                   NUMBERS and websites, ~20 per query, `ll` geo-anchoring.
+                   MEASURED 2026-08-13: /places returns NO phone field;
+                   /maps does. /maps has NO pagination (page=2 -> empty),
+                   so dense areas need several anchors, not several pages.
+    serper_places  Serper.dev  same pool, 1 credit — geo+website, NO phone
+    serper_web     Serper.dev  same pool, 1 credit — Google organic results
     tavily         Tavily      1,000 credits / MONTH, web search + snippets
     ddgs           `ddgs` lib  no key, unofficial DuckDuckGo — pilot-grade
                    fallback only, capped hard per day out of politeness
@@ -49,9 +54,10 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 DELAY = (1.5, 3.5)          # seconds, randomized, after every network call
 TIMEOUT = 20
 
-# serper_places and serper_web share ONE account-wide pool -> one counter key.
-POOL_OF = {"serper_places": "serper", "serper_web": "serper",
-           "tavily": "tavily", "ddgs": "ddgs"}
+# All serper_* backends share ONE account-wide credit pool -> one counter key.
+POOL_OF = {"serper_maps": "serper", "serper_places": "serper",
+           "serper_web": "serper", "tavily": "tavily", "ddgs": "ddgs"}
+COST = {"serper_maps": 3}    # per-call credits; every other backend costs 1
 LIMITS = {"serper": 2500,    # one-time free credits, no reset
           "tavily": 1000,    # resets monthly
           "ddgs": 300}       # our own politeness cap, resets daily
@@ -144,6 +150,23 @@ def _blank() -> dict:
             "lat": "", "lon": "", "rating": "", "source_id": ""}
 
 
+def _norm_serper_maps(payload: dict) -> list:
+    out = []
+    for p in payload.get("places", []):
+        r = _blank()
+        r["title"] = p.get("title") or ""
+        r["url"] = p.get("website") or ""
+        r["snippet"] = p.get("type") or ""
+        r["phone"] = p.get("phoneNumber") or ""
+        r["address"] = p.get("address") or ""
+        r["lat"] = p.get("latitude", "")
+        r["lon"] = p.get("longitude", "")
+        r["rating"] = p.get("rating", "")
+        r["source_id"] = str(p.get("cid") or p.get("placeId") or "")
+        out.append(r)
+    return out
+
+
 def _norm_serper_places(payload: dict) -> list:
     out = []
     for p in payload.get("places", []):
@@ -218,15 +241,19 @@ def _post_json(url: str, headers: dict, body: dict) -> dict:
     raise RuntimeError(f"{url}: giving up after 3 attempts ({last})")
 
 
-def _serper(query: str, mode: str, max_results: int) -> list:
+def _serper(query: str, mode: str, max_results: int, ll: str = "") -> list:
     key = os.environ.get("SERPER_API_KEY", "")
     if not key:
         raise SearchAuthError("SERPER_API_KEY missing — add it to .env")
-    endpoint = "places" if mode == "places" else "search"
+    endpoint = {"places": "places", "maps": "maps"}.get(mode, "search")
+    body = {"q": query, "gl": "fr", "hl": "fr"}
+    if ll:
+        body["ll"] = ll                      # "@lat,lon,15z" — maps only
     payload = _post_json(f"https://google.serper.dev/{endpoint}",
                          {"X-API-KEY": key, "Content-Type": "application/json"},
-                         {"q": query, "gl": "fr", "hl": "fr"})
-    rows = _norm_serper_places(payload) if mode == "places" else _norm_serper_web(payload)
+                         body)
+    rows = {"places": _norm_serper_places, "maps": _norm_serper_maps
+            }.get(mode, _norm_serper_web)(payload)
     return rows[:max_results]
 
 
@@ -276,17 +303,20 @@ def available_backends() -> list:
 
 
 def search(query: str, backend: str, max_results: int = 8,
-           quota_path: Path = QUOTA_PATH) -> list:
+           quota_path: Path = QUOTA_PATH, ll: str = "") -> list:
     """One search. Charges quota FIRST (hard-stop), sleeps AFTER (politeness).
 
+    `ll="@lat,lon,15z"` anchors serper_maps geographically (ignored elsewhere).
     Returns normalized rows; raises QuotaExceeded / SearchAuthError — callers
     must let QuotaExceeded stop the run, never swallow it.
     """
     if backend not in POOL_OF:
         raise ValueError(f"unknown backend {backend!r} — one of {sorted(POOL_OF)}")
     _load_env()
-    charge(backend, 1, quota_path)
-    if backend == "serper_places":
+    charge(backend, COST.get(backend, 1), quota_path)
+    if backend == "serper_maps":
+        rows = _serper(query, "maps", max_results, ll)
+    elif backend == "serper_places":
         rows = _serper(query, "places", max_results)
     elif backend == "serper_web":
         rows = _serper(query, "web", max_results)
@@ -322,6 +352,13 @@ def selftest() -> int:
     check("places phone", places[0]["phone"], "+33 4 91 12 34 56")
     check("places url=website", places[0]["url"], "https://marius.fr")
     check("places source_id", places[0]["source_id"], "123456789")
+    maps = _norm_serper_maps({"places": [{
+        "title": "Boulangerie Aixoise", "address": "45 Rue Davso, 13001 Marseille",
+        "latitude": 43.293, "longitude": 5.376, "type": "Boulangerie",
+        "phoneNumber": "+33 4 91 33 93 85", "website": "http://ba.fr",
+        "cid": "9696", "placeId": "ChIJx"}]})
+    check("maps phone", maps[0]["phone"], "+33 4 91 33 93 85")
+    check("maps cid preferred over placeId", maps[0]["source_id"], "9696")
     web = _norm_serper_web({"organic": [{"title": "t", "link": "https://a.fr",
                                          "snippet": "Tél 04 91 00 00 00"}]})
     check("web url", web[0]["url"], "https://a.fr")
@@ -341,12 +378,14 @@ def selftest() -> int:
             charge("serper_places", 1, qp)
         charge("serper_web", 1, qp)            # same pool
         check("serper pool shared", _load_quota(qp)["serper"]["used"], 4)
+        charge("serper_maps", COST["serper_maps"], qp)   # 3-credit call
+        check("maps costs 3", _load_quota(qp)["serper"]["used"], 7)
         try:
             charge("serper_places", LIMITS["serper"], qp)
             check("hard-stop raises", "no exception", "QuotaExceeded")
         except QuotaExceeded:
             check("hard-stop raises", True, True)
-        check("failed charge not recorded", _load_quota(qp)["serper"]["used"], 4)
+        check("failed charge not recorded", _load_quota(qp)["serper"]["used"], 7)
         # tavily monthly reset
         _save_quota({"tavily": {"used": 999, "limit": 1000, "month": "2020-01"}}, qp)
         charge("tavily", 1, qp)
