@@ -31,10 +31,20 @@ m2_s7_match.py decides which SIRET, if any, each one belongs to — geo rules,
 ambiguity = rejection, same as OSM and Pages Jaunes. A name alone never
 writes a phone onto a row.
 
+--named MODE (V4). The geo sweep returns the ~20 nearest shops per anchor, so
+a business in a dense street can be crowded out of every anchor that covered
+it. `--named` asks for it BY NAME ("{enseigne} {commune}") instead. Measured
+2026-08-13: 13 of 15 such queries returned a phone — but one asked for
+`COMPAGNIE BOULANGERE` and got "Boulanger Aubagne", an ELECTRONICS retailer.
+That is why named results are written as listings like every other source and
+handed to `m2_s7_match.py`, which requires geo + name agreement and rejects
+ambiguity. A name query never writes a phone onto a row by itself.
+
 Usage:
     python scripts/m2_s13_places.py --pilot 5      # ~15 credits, then STOP
     python scripts/m2_s13_places.py                # full sweep
     python scripts/m2_s13_places.py --max-pool-used 2200
+    python scripts/m2_s13_places.py --named --pilot 20   # by-name, phoneless rows
 """
 
 import argparse
@@ -55,6 +65,8 @@ CHECK_DIR = PROJECT_ROOT / "exports" / "boulangerie" / "checkpoints"
 OURS_PATH = CHECK_DIR / "etablissements.csv"
 OUT_PATH = CHECK_DIR / "places_listings.csv"
 DONE_PATH = CHECK_DIR / "places_anchors_done.txt"
+MATCHED_PATH = CHECK_DIR / "matched.csv"
+NAMED_DONE_PATH = CHECK_DIR / "places_named_done.txt"
 
 QUERY = "boulangerie patisserie"
 ZOOM = "15z"
@@ -146,12 +158,97 @@ class Grid:
         return False
 
 
+def run_named(args) -> None:
+    """Ask for phoneless businesses BY NAME; write listings, decide nothing."""
+    with OURS_PATH.open(encoding="utf-8-sig", newline="") as fh:
+        ours = list(csv.DictReader(fh, delimiter=";"))
+    have = set()
+    if MATCHED_PATH.exists():
+        with MATCHED_PATH.open(encoding="utf-8-sig", newline="") as fh:
+            have = {r["siret"] for r in csv.DictReader(fh, delimiter=";") if r["phone"]}
+    done = load_named_done()
+    seen_cids = set()
+    if OUT_PATH.exists():
+        with OUT_PATH.open(encoding="utf-8-sig", newline="") as fh:
+            seen_cids = {r["listing_id"] for r in csv.DictReader(fh, delimiter=";")}
+
+    todo = [r for r in ours if r["siret"] not in have and r["siret"] not in done]
+    EFF = {"": 0, "0 salarie": 1, "1 a 2 salaries": 2, "3 a 5 salaries": 3,
+           "6 a 9 salaries": 4, "10 a 19 salaries": 5, "20 a 49 salaries": 6,
+           "50 a 99 salaries": 7, "100 a 199 salaries": 8}
+    todo.sort(key=lambda r: (-EFF.get(r["tranche_effectif"], 9),
+                             0 if r["enseigne"] else 1))
+    if args.pilot:
+        todo = todo[:args.pilot]
+    log.info(f"{len(ours)} businesses | {len(have)} already have a phone | "
+             f"{len(done)} already name-queried -> {len(todo)} to do")
+
+    queries = written = with_phone = 0
+    try:
+        for i, r in enumerate(todo, 1):
+            pool = quota_state()["serper"]["used"]
+            if pool + 3 > args.max_pool_used:
+                log.info(f"credit ceiling reached ({pool}/{args.max_pool_used}) — stopping cleanly")
+                break
+            label = r["enseigne"] or r["raison_sociale"]
+            rows = search(f'{label} {r["commune"]}', "serper_maps", max_results=4)
+            queries += 1
+            out = []
+            for L in rows:
+                cid = L["source_id"]
+                if not cid or cid in seen_cids:
+                    continue
+                seen_cids.add(cid)
+                cp, city = parse_cp_city(L["address"])
+                site, fb = split_social(L["url"])
+                out.append({
+                    "listing_id": cid, "name": L["title"], "phone": L["phone"],
+                    "website": site, "address": L["address"],
+                    "postcode": cp, "city": city,
+                    "lat": L["lat"], "lon": L["lon"], "rating": L["rating"],
+                    "category": L["snippet"], "anchor_siret": r["siret"],
+                    "email": "", "facebook": fb, "siret": "",
+                })
+            if out:
+                flush(out)
+                written += len(out)
+                with_phone += sum(1 for o in out if o["phone"])
+            with NAMED_DONE_PATH.open("a", encoding="utf-8") as f:
+                f.write(r["siret"] + "\n")
+            if i % 20 == 0 or out:
+                log.info(f"[{i}/{len(todo)}] {label[:24]:24.24} -> {len(out)} new "
+                         f"(phones {with_phone}) pool={quota_state()['serper']['used']}")
+    except QuotaExceeded as exc:
+        log.warning(f"STOP: {exc}")
+    except SearchAuthError as exc:
+        sys.exit(f"auth: {exc}")
+
+    log.info("─" * 62)
+    log.info(f"named queries: {queries} ({queries * 3} credits) | new listings "
+             f"{written}, of which {with_phone} carry a phone")
+    log.info(f"serper pool: {quota_state()['serper']['used']}/2500")
+    log.info("Next: python scripts/m2_s7_match.py --report-rejects   "
+             "(the matcher decides — a name query proves nothing on its own)")
+
+
+def load_named_done() -> set:
+    return (set(NAMED_DONE_PATH.read_text(encoding="utf-8").split())
+            if NAMED_DONE_PATH.exists() else set())
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Serper /maps sweep over dept-13 bakeries")
     ap.add_argument("--pilot", type=int, default=0, help="stop after N queries")
     ap.add_argument("--max-pool-used", type=int, default=MAX_POOL_USED,
                     help="stop when the serper pool counter reaches this")
+    ap.add_argument("--named", action="store_true",
+                    help="query phoneless businesses BY NAME instead of by anchor")
     args = ap.parse_args()
+
+    if args.named:
+        if not OURS_PATH.exists():
+            sys.exit(f"{OURS_PATH} not found — run scripts/m2_s2_transform.py first.")
+        return run_named(args)
 
     if not OURS_PATH.exists():
         sys.exit(f"{OURS_PATH} not found — run scripts/m2_s2_transform.py first.")

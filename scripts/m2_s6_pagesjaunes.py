@@ -47,6 +47,14 @@ OURS_PATH = CHECK_DIR / "etablissements.csv"
 OUT_PATH  = CHECK_DIR / "pj_listings.csv"
 DONE_PATH = CHECK_DIR / "pj_done.txt"
 STATE_PATH = CHECK_DIR / "pj_storage_state.json"
+# A persistent Chrome profile, not a storage-state file. MEASURED 2026-08-13:
+# Pages Jaunes is behind CLOUDFLARE now, not DataDome as the V2 notes say, and
+# a Cloudflare managed challenge inspects the browser itself — bundled
+# Chromium announces `navigator.webdriver` and CDP artifacts, so the challenge
+# loops forever no matter how many times a human clicks it. Real Chrome with
+# the automation flags stripped, plus a profile that keeps the clearance
+# cookie, is what makes the challenge passable at all.
+PROFILE_DIR = CHECK_DIR / "pj_chrome_profile"
 
 BASE = "https://www.pagesjaunes.fr"
 WHAT = "boulangerie-patisserie"
@@ -61,6 +69,17 @@ PHONE_RE = re.compile(r"0[1-9](?:[\s.\-]?\d{2}){4}")
 AGGREGATORS = ("pagesjaunes", "pagespro", "google.", "facebook.", "instagram.",
                "tripadvisor", "ubereats", "deliveroo", "justeat", "petitfute",
                "yelp.", "mappy.", "linkedin.")
+
+# Stop after this many communes blocked back to back. Without it a blocked run
+# walks all ~119 communes hitting the same wall on page 1, wasting an hour to
+# learn what the third commune already proved.
+MAX_CONSECUTIVE_BLOCKS = 3
+# Markup that proves we received a real results page. If NEITHER a listing card
+# NOR this markup is present, the page is a challenge/interstitial dressed as
+# HTTP 200 — and marking it done would poison the resume file, burying pages
+# 2-8 of that commune forever.
+RESULTS_MARKUP = ("bi-list", "SearchResults", "bi-generic", "denomination",
+                  "annuaire", "resultats")
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)-7s %(message)s",
@@ -192,23 +211,46 @@ def main() -> None:
 
     written_total = 0
     blocked = 0
+    consecutive_blocks = 0
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=not args.headful)
-        ctx_args = {
-            "locale": "fr-FR",
-            "timezone_id": "Europe/Paris",
-            "viewport": {"width": 1366, "height": 900},
-            "user_agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                           "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"),
-        }
-        if STATE_PATH.exists():
-            ctx_args["storage_state"] = str(STATE_PATH)
-        ctx = browser.new_context(**ctx_args)
-        page = ctx.new_page()
+        PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+        browser = None
+        ctx = p.chromium.launch_persistent_context(
+            str(PROFILE_DIR),
+            channel="chrome",                 # real Chrome, not bundled Chromium
+            headless=not args.headful,
+            locale="fr-FR",
+            timezone_id="Europe/Paris",
+            viewport={"width": 1366, "height": 900},
+            args=["--disable-blink-features=AutomationControlled"],
+            ignore_default_args=["--enable-automation"],
+        )
+        # Belt and braces: some challenge scripts read navigator.webdriver
+        # directly before Chrome's own flag handling settles.
+        ctx.add_init_script(
+            "Object.defineProperty(navigator,'webdriver',{get:()=>undefined});")
+        page = ctx.pages[0] if ctx.pages else ctx.new_page()
         page.set_default_navigation_timeout(NAV_TIMEOUT)
 
+        def save_state(tag: str = "") -> None:
+            """The persistent profile keeps cookies on disk by itself; this is a
+            readable backup. Saving only at the end would throw away the one
+            thing a human had to do by hand if the run is interrupted."""
+            try:
+                ctx.storage_state(path=str(STATE_PATH))
+                if tag:
+                    log.info(f"session state saved ({tag}) -> {STATE_PATH.name}")
+            except Exception as exc:
+                log.warning(f"could not save session state: {type(exc).__name__}")
+
         for commune, cp in todo:
+            if consecutive_blocks >= MAX_CONSECUTIVE_BLOCKS:
+                log.error(f"{consecutive_blocks} communes blocked in a row — stopping. "
+                          "Run once with --headful and solve the challenge by hand; "
+                          "the session is saved and the next run resumes here.")
+                break
             where = f"{slug(commune)}-{cp}"
+            commune_ok = False
             for pageno in range(1, MAX_PAGES_PER_COMMUNE + 1):
                 url = f"{BASE}/annuaire/chercherlespros?quoiqui={WHAT}&ou={where}&page={pageno}"
                 if url in done:
@@ -222,12 +264,41 @@ def main() -> None:
                     log.warning(f"{where} p{pageno}: {type(exc).__name__} — skipping")
                     break
 
-                if status in (403, 429) or "datadome" in (page.content() or "").lower():
+                content = (page.content() or "")
+                low = content.lower()
+                if status in (403, 429) or "datadome" in low or "captcha" in low:
                     blocked += 1
-                    log.warning(f"{where} p{pageno}: BLOCKED (status {status}). "
-                                "Re-run with --headful to clear the challenge once; "
-                                "state is persisted afterwards.")
-                    break
+                    log.warning(f"{where} p{pageno}: BLOCKED (status {status}).")
+                    if args.headful:
+                        # The whole point of --headful: a human is watching.
+                        log.warning("─" * 62)
+                        log.warning("SOLVE THE CHALLENGE IN THE BROWSER WINDOW NOW.")
+                        log.warning("Waiting up to 5 minutes, then continuing automatically.")
+                        log.warning("─" * 62)
+                        for _ in range(150):        # 150 x 2s = 5 min
+                            time.sleep(2)
+                            try:
+                                low2 = (page.content() or "").lower()
+                            except Exception:
+                                continue
+                            if "datadome" not in low2 and "captcha" not in low2:
+                                log.info("challenge cleared — saving session and retrying")
+                                save_state("after challenge")
+                                break
+                        else:
+                            log.warning("still challenged after 5 min — moving on")
+                        # Retry this same URL once, now that cookies exist.
+                        try:
+                            resp = page.goto(url, wait_until="domcontentloaded")
+                            status = resp.status if resp else 0
+                            content = page.content() or ""
+                            low = content.lower()
+                        except Exception:
+                            break
+                        if status in (403, 429) or "datadome" in low or "captcha" in low:
+                            break
+                    else:
+                        break
 
                 # Consent banner, first page only in practice.
                 for sel in ("#didomi-notice-agree-button", "button#onetrust-accept-btn-handler",
@@ -243,18 +314,32 @@ def main() -> None:
                 rows = extract_listings(page, url)
                 n = flush_rows(rows)          # <- on disk before anything else
                 written_total += n
-                mark_done(url)
+
+                # Only record a page as done when we are sure we SAW a results
+                # page. A silent interstitial yields 0 cards too, and marking it
+                # done buries pages 2-8 of this commune in pj_done.txt forever.
+                real_page = bool(rows) or any(k.lower() in low for k in RESULTS_MARKUP)
+                if real_page:
+                    mark_done(url)
+                    commune_ok = True
+                    consecutive_blocks = 0
+                else:
+                    log.warning(f"{where} p{pageno}: 0 cards and no results markup — "
+                                "NOT marking done (looks like an interstitial)")
                 log.info(f"{where} p{pageno}: written={n} (run total {written_total})")
                 if n == 0:
                     break                      # no more result pages for this commune
                 time.sleep(random.uniform(*PAGE_DELAY))
 
-        try:
-            ctx.storage_state(path=str(STATE_PATH))
-        except Exception:
-            pass
+            if commune_ok:
+                save_state()                   # cheap, and never loses the challenge
+            else:
+                consecutive_blocks += 1
+
+        save_state("end of run")
         ctx.close()
-        browser.close()
+        if browser is not None:
+            browser.close()
 
     log.info("─" * 62)
     log.info(f"written={written_total} rows this run -> {OUT_PATH}")
