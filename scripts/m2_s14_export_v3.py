@@ -34,8 +34,16 @@ Rules carried over from agriculture and V2, all bought with incidents:
     business's own line. Ranked last, disclosed in its own column.
 
 Phone precedence (best first) — a site that proves its own SIRET beats a
-directory, and a snippet scraped off a search result is the weakest claim:
-    site/confirme > osm > serper_places > pagesjaunes > site/faible > snippet
+directory:
+    site/confirme > osm > serper_places > pagesjaunes > site/faible
+
+  * A SEARCH-SNIPPET PHONE NEVER ENTERS THE `Telephone` COLUMN. Measured
+    2026-08-13 against the 43 businesses holding both a Maps phone and a
+    geo-gated snippet phone: **only 76% agreed**, and one disagreement was an
+    01 (Paris) switchboard on a Marseille bakery — an aggregator's number, not
+    the shop's. One wrong number in four means a salesperson calls a stranger,
+    so snippets ship in their own `Telephone piste (non confirme)` column with
+    the uncertainty in the header. Disclosed, not discarded, not oversold.
 
 Usage:
     python scripts/m2_s14_export_v3.py
@@ -76,6 +84,7 @@ COLUMNS = [
     ("telephone",            "Telephone"),
     ("telephone_source",     "Telephone source"),
     ("telephone_surtaxe",    "Telephone surtaxe"),
+    ("telephone_piste",      "Telephone piste (non confirme)"),
     ("email",                "Email"),
     ("email_statut",         "Email verifie"),
     ("email_confiance",      "Email confiance"),
@@ -102,9 +111,10 @@ RANK = {("confirme", "valide"): 0, ("confirme", "non verifie"): 1,
         ("faible", "non verifie"): 4, ("faible", "risque"): 5}
 
 # Phone provenance ranking. Lower is better; surtaxé adds +100 so a premium
-# number always loses to any ordinary one, whatever its source.
+# number always loses to any ordinary one, whatever its source. "snippet" is
+# deliberately absent — it is not a candidate for this column at all.
 PHONE_RANK = {"site/confirme": 0, "osm": 1, "serper_places": 2,
-              "pagesjaunes": 3, "site/faible": 4, "snippet": 5}
+              "pagesjaunes": 3, "site/faible": 4}
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)-7s %(message)s",
@@ -167,6 +177,7 @@ def main() -> None:
 
     # siret -> [(rank, phone, source)] — every claim kept, best one exported.
     phones: dict = defaultdict(list)
+    piste: dict = {}       # search-snippet phones — 76% precise, own column
     website, facebook, instagram, linkedin = {}, {}, {}, {}
     srcs = defaultdict(set)
     cand: dict = defaultdict(list)   # siret -> [(rank, email, verdict, conf, src)]
@@ -218,11 +229,11 @@ def main() -> None:
 
     for r in discovered:
         s = r["siret"]
-        # Snippet phones are geo-gated at collection (m2_s8 writes them only
-        # when the snippet showed our commune or CP) and rank last regardless.
-        if r.get("phone") and r.get("snippet_geo_ok"):
-            add_phone(s, r["phone"], "snippet")
-            srcs[s].add("snippet")
+        # Snippet phones are geo-gated at collection but still measured at only
+        # 76% agreement with Maps — they go to the `piste` column, never to
+        # `Telephone`. See the module docstring.
+        if r.get("phone") and r.get("snippet_geo_ok") and s not in piste:
+            piste[s] = normalize_fr_phone(r["phone"])
         if r.get("website") and s not in website:
             website[s] = r["website"]
             srcs[s].add("recherche")
@@ -247,6 +258,9 @@ def main() -> None:
             "telephone": best_ph[1] if best_ph else "",
             "telephone_source": best_ph[2] if best_ph else "",
             "telephone_surtaxe": "oui" if best_ph and is_surtaxe(best_ph[1]) else "",
+            # Only shown where there is no confirmed phone — otherwise it is
+            # noise next to a better number.
+            "telephone_piste": "" if best_ph else piste.get(s, ""),
             "email": best[1] if best else "",
             "email_statut": best[2] if best else "",
             "email_confiance": best[3] if best else "",
@@ -289,6 +303,8 @@ def main() -> None:
     log.info(f"  reachable (phone|email)  {n_reach:>6} ({n_reach/max(1,n):.1%})")
     log.info(f"  phone sources: {dict(Counter(r['telephone_source'] for r in rows if r['telephone']))}")
     log.info(f"  surtaxe phones (flagged, not dropped): {n_surt}")
+    log.info(f"  snippet 'piste' phones (76% precise, own column): "
+             f"{sum(1 for r in rows if r['telephone_piste'])}")
     log.info(f"  email verdicts: {dict(Counter(r['email_statut'] for r in rows if r['email']))}")
     log.info(f"  email confiance: {dict(Counter(r['email_confiance'] for r in rows if r['email']))}")
     log.info(f"  addresses withheld as proven-invalid: {n_blocked}")

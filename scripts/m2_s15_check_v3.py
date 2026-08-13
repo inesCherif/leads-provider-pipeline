@@ -62,7 +62,8 @@ REQUIRED_NON_EMPTY = ["Raison sociale", "Adresse", "Ville"]
 #   Autres emails     — empty means nobody had a second address
 #   LinkedIn          — a neighbourhood bakery genuinely has no company page
 # Still printed when empty, so this exemption can never hide a data loss.
-MAY_BE_EMPTY = {"Telephone surtaxe", "Autres emails", "LinkedIn"}
+MAY_BE_EMPTY = {"Telephone surtaxe", "Autres emails", "LinkedIn",
+                "Telephone piste (non confirme)"}
 PHONE_FMT = re.compile(r"^0[1-9](?: \d{2}){4}$")
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -195,6 +196,16 @@ def main() -> None:
     nosrc = [str(r["SIRET"]) for r in phoned if not str(r["Telephone source"]).strip()]
     hard(not nosrc, "H11 every phone states its source",
          f"{len(nosrc)} without provenance, e.g. {nosrc[:3]}")
+    # A search-snippet phone was measured at 76% agreement with Maps. It must
+    # never reach the column a salesperson dials from.
+    leaked = [str(r["SIRET"]) for r in phoned
+              if str(r["Telephone source"]).strip() == "snippet"]
+    hard(not leaked, "H13 no snippet phone in the confirmed Telephone column",
+         f"{len(leaked)} leaked, e.g. {leaked[:3]}")
+    dbl = [str(r["SIRET"]) for r in rows
+           if str(r["Telephone"]).strip() and str(r["Telephone piste (non confirme)"]).strip()]
+    hard(not dbl, "H14 piste column empty where a confirmed phone exists",
+         f"{len(dbl)} rows carry both, e.g. {dbl[:3]}")
 
     # H12 — no regression. An enrichment that loses data is a bug.
     n_ph = len(phoned)
