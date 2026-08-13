@@ -83,7 +83,7 @@ from m2lib_contact import (normalize_fr_phone, is_surtaxe,  # noqa: E402
 
 CHECK_DIR = PROJECT_ROOT / "exports" / "boulangerie" / "checkpoints"
 OUT_DIR   = PROJECT_ROOT / "exports" / "boulangerie"
-BASENAME  = "boulangerie_13_v3"
+BASENAME  = "boulangerie_13_v4"
 
 COLUMNS = [
     ("siret",                "SIRET"),
@@ -133,6 +133,9 @@ RANK = {("confirme", "valide"): 0, ("confirme", "non verifie"): 1,
 # column at all (see the docstring for the measurements that decided it).
 PHONE_RANK = {"osm": 0, "serper_places": 1, "pagesjaunes": 2,
               "site/confirme": 3}
+# Two independent weak sources naming the same number. Ranked below every
+# corroborated single source, above nothing — it only ever fills a gap.
+CORROBORATED_RANK = 4
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)-7s %(message)s",
@@ -195,7 +198,10 @@ def main() -> None:
 
     # siret -> [(rank, phone, source)] — every claim kept, best one exported.
     phones: dict = defaultdict(list)
-    piste: dict = {}       # search-snippet phones — 76% precise, own column
+    # EVERY untrusted claim is kept, not just the first. Keeping one per siret
+    # would discard the second witness — which is precisely the agreement
+    # signal the corroborator below needs.
+    claims: dict = defaultdict(list)          # siret -> [(phone, source)]
     website, facebook, instagram, linkedin = {}, {}, {}, {}
     srcs = defaultdict(set)
     cand: dict = defaultdict(list)   # siret -> [(rank, email, verdict, conf, src)]
@@ -210,7 +216,7 @@ def main() -> None:
         if not p:
             return
         if source not in PHONE_RANK:
-            piste.setdefault(siret, p)
+            claims[siret].append((p, source))
             return
         rank = PHONE_RANK[source] + (100 if is_surtaxe(p) else 0)
         phones[siret].append((rank, p, source))
@@ -230,6 +236,17 @@ def main() -> None:
             v = verified.get(e, "non verifie")
             cand[s].append((RANK.get(("confirme", v), 9), e, v, "confirme", src))
             srcs[s].add(src)
+
+    # SMTP-PROVEN generated addresses (m2_s10). These are the only guessed
+    # addresses that ship, and only because a mail server accepted them; a
+    # catch-all domain's 250 proves nothing and never reaches this file.
+    for r in read("pattern_candidates.csv"):
+        if r.get("status") != "valid":
+            continue
+        s, e = r["siret"], r["candidate"].lower()
+        cand[s].append((RANK[("confirme", "valide")], e, "valide",
+                        "pattern/verifie", "pattern"))
+        srcs[s].add("pattern")
 
     n_third_party = 0
     for r in site_emails:
@@ -275,6 +292,34 @@ def main() -> None:
             if r.get(key) and s not in store:
                 store[s] = r[key]
 
+    # CORROBORATION. A single untrusted claim is a lead (snippet 76%,
+    # site/faible 17%). But two INDEPENDENT sources naming the same number is
+    # a different kind of evidence: for them to agree by chance, two unrelated
+    # publishers would have to make the same mistake about the same shop. That
+    # is the same logic that made OSM×Maps agreement (95.7%) the strongest
+    # signal in this project — applied to the weak sources instead.
+    # Independence is judged by SOURCE, not by row: two snippets from the same
+    # directory are one page read twice, not two witnesses.
+    for r in read("serp_snippets.csv"):
+        p = normalize_fr_phone(r.get("phone", ""))
+        if p:
+            claims[r["siret"]].append((p, f"serp/{r.get('snippet_domain', '?')}"))
+
+    n_corroborated = 0
+    for s, cl in claims.items():
+        by_number = defaultdict(set)
+        for p, src in cl:
+            by_number[p].add(src)
+        for p, sources in by_number.items():
+            if len(sources) >= 2:
+                label = "corrobore(" + "+".join(sorted(sources)[:2]) + ")"
+                phones[s].append((CORROBORATED_RANK + (100 if is_surtaxe(p) else 0),
+                                  p, label))
+                n_corroborated += 1
+    if n_corroborated:
+        log.info(f"corroboration: {n_corroborated} phone(s) promoted — two "
+                 f"independent sources named the same number")
+
     # SWITCHBOARD GUARD. `04 42 56 68 46` was found on 19 different companies'
     # pages and `04 42 07 88 15` on 5 — a franchise head office or the web
     # agency's own line in a shared footer, not any shop's number. Selling one
@@ -283,8 +328,8 @@ def main() -> None:
     # across its own établissements is untouched.
     by_number = defaultdict(set)
     siren_of = {b["siret"]: b["siren"] for b in base}
-    for s, claims in phones.items():
-        for _, p, _ in claims:
+    for s, phone_claims in phones.items():
+        for _, p, _ in phone_claims:
             by_number[p].add(siren_of.get(s, s))
     switchboards = {p for p, sirens in by_number.items() if len(sirens) > 2}
     if switchboards:
@@ -312,7 +357,8 @@ def main() -> None:
             "telephone_surtaxe": "oui" if best_ph and is_surtaxe(best_ph[1]) else "",
             # Only shown where there is no confirmed phone — otherwise it is
             # noise next to a better number.
-            "telephone_piste": "" if best_ph else piste.get(s, ""),
+            "telephone_piste": ("" if best_ph or not claims[s]
+                                else claims[s][0][0]),
             "email": best[1] if best else "",
             "email_statut": best[2] if best else "",
             "email_confiance": best[3] if best else "",
