@@ -71,12 +71,22 @@ DISCOVERED_PATH = CHECK_DIR / "discovered_sites.csv"
 OUT_PATH  = CHECK_DIR / "site_emails.csv"
 CONTACTS_PATH = CHECK_DIR / "site_contacts.csv"
 DONE_PATH = CHECK_DIR / "emails_done.txt"
+DEEP_DONE_PATH = CHECK_DIR / "emails_done_deep.txt"
 
 SUBPAGES = ["", "/contact", "/contacts", "/nous-contacter", "/mentions-legales",
             "/mentions-legales/", "/a-propos", "/infos", "/contactez-nous",
             "/contact.html", "/contact.php", "/nous-trouver"]
 TIMEOUT = 12
 DELAY = 1.0
+
+# --deep: a guessed URL list only finds a contact page that lives where we
+# guessed. Plenty of small sites put it at /ou-nous-trouver, /la-maison or
+# behind a JS router with a sitemap. Deep mode reads sitemap.xml and the home
+# page's own links, so the site tells US where its contact page is.
+DEEP_MAX_PAGES = 10
+DEEP_LINK_RE = re.compile(
+    r"contact|mention|propos|qui-sommes|nous|equipe|boutique|magasin|"
+    r"horaire|trouver|adresse|legal|infos?", re.I)
 
 # A chain's "nos boutiques" page lists one mailbox per store, nationwide.
 # sophie-lebreuilly.com yielded 94 addresses — abbeville@, amiens@, arras@ —
@@ -133,8 +143,45 @@ def name_tokens(s: str) -> set:
     return {t for t in norm(s).split() if len(t) > 2 and t not in stop}
 
 
-def load_done() -> set:
-    return set(DONE_PATH.read_text(encoding="utf-8").split()) if DONE_PATH.exists() else set()
+def load_done(path: Path = DONE_PATH) -> set:
+    return set(path.read_text(encoding="utf-8").split()) if path.exists() else set()
+
+
+def deep_urls(sess, domain: str) -> list:
+    """Pages the SITE says it has: sitemap.xml first, then home-page links."""
+    urls, seen = [], set()
+
+    def add(u: str) -> None:
+        u = u.split("#")[0].rstrip("/")
+        if u and u not in seen and len(urls) < DEEP_MAX_PAGES:
+            seen.add(u)
+            urls.append(u)
+
+    add(f"https://{domain}")
+    for sm in (f"https://{domain}/sitemap.xml", f"https://{domain}/sitemap_index.xml"):
+        try:
+            resp = sess.get(sm, timeout=TIMEOUT)
+        except Exception:
+            continue
+        if resp.status_code != 200 or "<" not in resp.text:
+            continue
+        for loc in re.findall(r"<loc>\s*([^<\s]+)\s*</loc>", resp.text, re.I):
+            if DEEP_LINK_RE.search(loc) and domain in loc:
+                add(loc)
+        break
+    if len(urls) < DEEP_MAX_PAGES:
+        try:
+            resp = sess.get(f"https://{domain}", timeout=TIMEOUT)
+            if resp.status_code == 200:
+                for href in re.findall(r'href=["\']([^"\']+)["\']', resp.text):
+                    if not DEEP_LINK_RE.search(href):
+                        continue
+                    full = urllib.parse.urljoin(f"https://{domain}/", href)
+                    if urllib.parse.urlparse(full).netloc.lower().replace("www.", "") == domain:
+                        add(full)
+        except Exception:
+            pass
+    return urls
 
 
 def flush(path: Path, fieldnames: list, rows: list) -> None:
@@ -175,6 +222,13 @@ def extract_emails(html: str) -> set:
     return clean
 
 
+def read_rows(path: Path) -> list:
+    if not path.exists():
+        return []
+    with path.open(encoding="utf-8-sig", newline="") as fh:
+        return list(csv.DictReader(fh, delimiter=";"))
+
+
 def load_targets() -> dict:
     """domain -> [row dicts]. matched.csv + discovered_sites.csv, deduped."""
     rows = []
@@ -207,6 +261,9 @@ def load_targets() -> dict:
 def main() -> None:
     ap = argparse.ArgumentParser(description="Crawl bakery sites for e-mails, phones, socials")
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--deep", action="store_true",
+                    help="re-visit domains that yielded nothing, following "
+                         "sitemap.xml and the site's own contact links")
     args = ap.parse_args()
 
     try:
@@ -219,12 +276,24 @@ def main() -> None:
         sys.exit("No websites found in matched.csv / discovered_sites.csv — "
                  "run m2_s7_match.py (and m2_s8_websites.py) first.")
 
-    done = load_done()
-    todo = [d for d in by_domain if d not in done]
+    if args.deep:
+        # Targets: domains we REACHED but that gave us nothing. "Crawled minus
+        # yielded" is not that set — unreachable domains are in the done file
+        # too, and re-fetching a dead host learns nothing a second time.
+        yielded = {r["domain"] for r in read_rows(OUT_PATH)}
+        yielded |= {r["domain"] for r in read_rows(CONTACTS_PATH)}
+        deep_done = load_done(DEEP_DONE_PATH)
+        todo = [d for d in by_domain
+                if d in load_done() and d not in yielded and d not in deep_done]
+        log.info(f"DEEP mode: {len(by_domain)} domains known, {len(yielded)} already "
+                 f"yielded something, {len(deep_done)} deep-crawled -> {len(todo)} to retry")
+    else:
+        done = load_done()
+        todo = [d for d in by_domain if d not in done]
+        log.info(f"{len(by_domain)} distinct domains, {len(done)} already crawled, "
+                 f"{len(todo)} to do")
     if args.limit:
         todo = todo[:args.limit]
-    log.info(f"{len(by_domain)} distinct domains, {len(done)} already crawled, "
-             f"{len(todo)} to do")
 
     sess = requests.Session()
     sess.headers.update({
@@ -249,8 +318,9 @@ def main() -> None:
         phones: dict = {}       # normalized phone -> page it was found on
         pages_text = ""
         reached = False
-        for sub in SUBPAGES:
-            url = f"https://{domain}{sub}"
+        pages = (deep_urls(sess, domain) if args.deep
+                 else [f"https://{domain}{sub}" for sub in SUBPAGES])
+        for url in pages:
             try:
                 resp = sess.get(url, timeout=TIMEOUT, allow_redirects=True)
             except Exception:
@@ -271,9 +341,10 @@ def main() -> None:
                 phones.setdefault(p, url)
             time.sleep(DELAY)
 
+        done_file = DEEP_DONE_PATH if args.deep else DONE_PATH
         if not reached:
             stats["unreachable"] += 1
-            with DONE_PATH.open("a", encoding="utf-8") as f:
+            with done_file.open("a", encoding="utf-8") as f:
                 f.write(domain + "\n")
             continue
 
@@ -358,7 +429,7 @@ def main() -> None:
             contacts_written += len(crows)
             stats["domains_with_phone_or_social"] += 1
 
-        with DONE_PATH.open("a", encoding="utf-8") as f:
+        with done_file.open("a", encoding="utf-8") as f:
             f.write(domain + "\n")
         log.info(f"[{i}/{len(todo)}] {domain:38.38s} emails={len(emails)} "
                  f"phones={len(phones)} conf={confirmation:6s} "
