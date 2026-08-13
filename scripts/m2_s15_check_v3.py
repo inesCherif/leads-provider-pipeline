@@ -198,9 +198,10 @@ def main() -> None:
          f"{len(nosrc)} without provenance, e.g. {nosrc[:3]}")
     # A search-snippet phone was measured at 76% agreement with Maps. It must
     # never reach the column a salesperson dials from.
+    UNTRUSTED = {"snippet", "site/faible"}
     leaked = [str(r["SIRET"]) for r in phoned
-              if str(r["Telephone source"]).strip() == "snippet"]
-    hard(not leaked, "H13 no snippet phone in the confirmed Telephone column",
+              if str(r["Telephone source"]).strip() in UNTRUSTED]
+    hard(not leaked, "H13 no untrusted source in the dialled Telephone column",
          f"{len(leaked)} leaked, e.g. {leaked[:3]}")
     dbl = [str(r["SIRET"]) for r in rows
            if str(r["Telephone"]).strip() and str(r["Telephone piste (non confirme)"]).strip()]

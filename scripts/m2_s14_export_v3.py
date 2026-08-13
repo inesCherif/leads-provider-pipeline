@@ -33,17 +33,33 @@ Rules carried over from agriculture and V2, all bought with incidents:
     printed by a directory — the number was real, it just was not the
     business's own line. Ranked last, disclosed in its own column.
 
-Phone precedence (best first) — a site that proves its own SIRET beats a
-directory:
-    site/confirme > osm > serper_places > pagesjaunes > site/faible
+Phone precedence — set by MEASUREMENT, not by intuition (2026-08-13):
 
-  * A SEARCH-SNIPPET PHONE NEVER ENTERS THE `Telephone` COLUMN. Measured
-    2026-08-13 against the 43 businesses holding both a Maps phone and a
-    geo-gated snippet phone: **only 76% agreed**, and one disagreement was an
-    01 (Paris) switchboard on a Marseille bakery — an aggregator's number, not
-    the shop's. One wrong number in four means a salesperson calls a stranger,
-    so snippets ship in their own `Telephone piste (non confirme)` column with
-    the uncertainty in the header. Disclosed, not discarded, not oversold.
+    osm > serper_places > pagesjaunes > site/confirme
+
+  OSM and Google Maps agree with each other on 45 of the 47 businesses both
+  describe (**95.7%**) — two independent sources corroborating one number.
+  Nothing else here has that. Intuition said a business's own website should
+  outrank a directory; the measurement disagreed, so the directory wins.
+
+  Two sources are EXCLUDED from the dialled column entirely, and ship in
+  `Telephone piste (non confirme)` instead:
+
+  * SEARCH SNIPPETS — 76% agreement with Maps (43 overlapping businesses).
+    One disagreement was an 01 (Paris) switchboard on a Marseille bakery.
+  * UNCONFIRMED SITES (`site/faible`) — 17% agreement, rising to only 50%
+    after the switchboard guard. `faible` means the domain was never proved
+    to belong to this business, and the phone on a stranger's website is a
+    stranger's phone. This is the `EARL DU VIEUX CHENE -> vieuxchene.fr`
+    lesson from agriculture, in phone form.
+
+  `site/confirme` (SIRET/SIREN/CP+name proved on the page) agrees with Maps
+  62% of the time. That disagreement does not prove the site wrong — a shop's
+  own page is arguably more current than a directory — so it is kept, but
+  ranked last so it only ever fills a gap no corroborated source can.
+
+  One wrong number in four means a salesperson calls a stranger. Everything
+  uncertain is disclosed in its own column, not discarded and not oversold.
 
 Usage:
     python scripts/m2_s14_export_v3.py
@@ -111,10 +127,11 @@ RANK = {("confirme", "valide"): 0, ("confirme", "non verifie"): 1,
         ("faible", "non verifie"): 4, ("faible", "risque"): 5}
 
 # Phone provenance ranking. Lower is better; surtaxé adds +100 so a premium
-# number always loses to any ordinary one, whatever its source. "snippet" is
-# deliberately absent — it is not a candidate for this column at all.
-PHONE_RANK = {"site/confirme": 0, "osm": 1, "serper_places": 2,
-              "pagesjaunes": 3, "site/faible": 4}
+# number always loses to any ordinary one, whatever its source. "snippet" and
+# "site/faible" are deliberately absent — they are not candidates for this
+# column at all (see the docstring for the measurements that decided it).
+PHONE_RANK = {"osm": 0, "serper_places": 1, "pagesjaunes": 2,
+              "site/confirme": 3}
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)-7s %(message)s",
@@ -183,10 +200,18 @@ def main() -> None:
     cand: dict = defaultdict(list)   # siret -> [(rank, email, verdict, conf, src)]
 
     def add_phone(siret, raw, source):
+        """Route a phone to the dialled column or the `piste` column.
+
+        A source absent from PHONE_RANK is not trusted enough to dial; it is
+        kept as a lead rather than thrown away.
+        """
         p = normalize_fr_phone(raw)
         if not p:
             return
-        rank = PHONE_RANK.get(source, 9) + (100 if is_surtaxe(p) else 0)
+        if source not in PHONE_RANK:
+            piste.setdefault(siret, p)
+            return
+        rank = PHONE_RANK[source] + (100 if is_surtaxe(p) else 0)
         phones[siret].append((rank, p, source))
 
     for m in matched:
@@ -216,9 +241,10 @@ def main() -> None:
 
     for r in site_contacts:
         s = r["siret"]
+        # site/faible is not in PHONE_RANK, so add_phone routes it to `piste`.
         src = "site/confirme" if r.get("confiance") == "confirme" else "site/faible"
         add_phone(s, r.get("phone", ""), src)
-        if r.get("phone"):
+        if r.get("phone") and r.get("confiance") == "confirme":
             srcs[s].add("site")
         for key, store in (("facebook", facebook), ("instagram", instagram),
                            ("linkedin", linkedin)):
@@ -232,8 +258,8 @@ def main() -> None:
         # Snippet phones are geo-gated at collection but still measured at only
         # 76% agreement with Maps — they go to the `piste` column, never to
         # `Telephone`. See the module docstring.
-        if r.get("phone") and r.get("snippet_geo_ok") and s not in piste:
-            piste[s] = normalize_fr_phone(r["phone"])
+        if r.get("phone") and r.get("snippet_geo_ok"):
+            add_phone(s, r["phone"], "snippet")     # -> piste, never dialled
         if r.get("website") and s not in website:
             website[s] = r["website"]
             srcs[s].add("recherche")
