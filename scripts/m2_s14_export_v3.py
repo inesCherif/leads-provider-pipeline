@@ -83,7 +83,7 @@ from m2lib_contact import (normalize_fr_phone, is_surtaxe,  # noqa: E402
 
 CHECK_DIR = PROJECT_ROOT / "exports" / "boulangerie" / "checkpoints"
 OUT_DIR   = PROJECT_ROOT / "exports" / "boulangerie"
-BASENAME  = "boulangerie_13_v4"
+BASENAME  = "boulangerie_13_v5"
 
 COLUMNS = [
     ("siret",                "SIRET"),
@@ -331,10 +331,18 @@ def main() -> None:
     for s, phone_claims in phones.items():
         for _, p, _ in phone_claims:
             by_number[p].add(siren_of.get(s, s))
+    # V5: count and filter the `piste` claims too — franceboulangerie.fr
+    # prints its network line (09 86 23 49 09) in three different shops'
+    # snippets, and without this the switchboard shipped as their piste.
+    for s, cl in claims.items():
+        for p, _ in cl:
+            by_number[p].add(siren_of.get(s, s))
     switchboards = {p for p, sirens in by_number.items() if len(sirens) > 2}
     if switchboards:
         for s in list(phones):
             phones[s] = [c for c in phones[s] if c[1] not in switchboards]
+        for s in list(claims):
+            claims[s] = [c for c in claims[s] if c[0] not in switchboards]
         log.info(f"switchboard guard: {len(switchboards)} number(s) claimed by "
                  f">2 companies dropped, e.g. {sorted(switchboards)[:3]}")
 
