@@ -86,6 +86,21 @@ AGGREGATORS = (
     # added for the API backends
     "hoodspot", "infobel", "solocal", "fr.kompass", "horaires.", "snapchat.",
     "alentoor", "ville-data", "linternaute", "communes.com", "nosavis",
+    # added 2026-08-13 after the tavily run: registry mirrors and legal-notice
+    # sites it surfaces readily. Every one of them PRINTS the SIRET, so they
+    # would sail through m2_s9's "page mentions the SIRET" confirmation.
+    "societeinfo", "bodacc", "fichesociete", "annonces-legales",
+    "controlessanitaires", "leguichetdesformalites", "dataprospects",
+    "french-business-law", "localbiz.fr", "lavieduvillage", "e-pro.fr",
+    "commerces-ouverts", "monemplacement", "thegoodarles", "myboulange.",
+    "infonet.", "pple.fr", "datalegal", "telephone.city", "francetravail",
+    "up.coop", "en-ligne.me", "buuyers", "petitscommerces", "latoque.fr",
+    "eterritoire", "starofservice", "calameo", "le-site-de.", "credipro",
+    "legaleo", "publicationannoncelegale", "deezer", "commerce-engage",
+    "blog-aixty", "em-lyon", "bt-africa",
+    # commune town-hall sites listing local shops (single-SIRET ones slip
+    # past the reseau guard, and the mairie's mailbox is not the bakery's)
+    "venelles.fr", "peynier.net", "plandecuques.fr",
 )
 BAD_TLD = (".gouv.fr", ".gov", ".edu")
 
