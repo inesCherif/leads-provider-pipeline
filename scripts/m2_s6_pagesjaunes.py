@@ -24,10 +24,34 @@ Output: exports/boulangerie/checkpoints/pj_listings.csv
         (name, phone, website, address, postcode, city, listing_id)
 Matching to SIRET rows is m2_s7's job, and requires location agreement.
 
+ATTACH MODE (V5, 2026-08-13). Every LAUNCHED browser — bundled Chromium and
+real Chrome alike — was detected by Cloudflare, and a human-solved
+`cf_clearance` did not survive automated navigation. The one untested free
+route: the human runs her OWN Chrome with remote debugging and solves the
+challenge as a normal visitor; this script then ATTACHES to that trusted,
+living session over CDP and never launches anything.
+
+    1. Close all Chrome windows, then start:
+       "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" ^
+           --remote-debugging-port=9222 ^
+           --user-data-dir="%LOCALAPPDATA%\\pj_cdp_profile"
+    2. Browse to pagesjaunes.fr YOURSELF, pass the challenge, check a search
+       for "boulangerie marseille" really shows results.
+    3. python scripts/m2_s6_pagesjaunes.py --attach --pilot 1 --dump-html
+       -> inspect the saved HTML, fix selectors if reality differs, scale up.
+
+The card selectors were rewritten 2026-08-13 from a WORKING scraper of Sam's:
+cards are `li.bi.bi-generic`, the name sits in `.bi-denomination h3`, and —
+critical — **phone numbers are hidden behind an "Afficher le N°" button** and
+only appear in `#bi-fantomas-<id>` / `.number-contact` after a click. The
+previous selectors were blind guesses that would have found almost no phones
+even past Cloudflare.
+
 Usage:
-    python scripts/m2_s6_pagesjaunes.py --pilot 3      # 3 communes, eyeball it
-    python scripts/m2_s6_pagesjaunes.py                # full run (resumes)
-    python scripts/m2_s6_pagesjaunes.py --headful      # watch it / clear a challenge
+    python scripts/m2_s6_pagesjaunes.py --attach --pilot 1 --dump-html  # first
+    python scripts/m2_s6_pagesjaunes.py --attach                        # full crawl
+    python scripts/m2_s6_pagesjaunes.py --headful   # LAST-RESORT fallback:
+                                                    # launched Chrome, solve by hand
 """
 
 import argparse
@@ -51,9 +75,11 @@ STATE_PATH = CHECK_DIR / "pj_storage_state.json"
 # Pages Jaunes is behind CLOUDFLARE now, not DataDome as the V2 notes say, and
 # a Cloudflare managed challenge inspects the browser itself — bundled
 # Chromium announces `navigator.webdriver` and CDP artifacts, so the challenge
-# loops forever no matter how many times a human clicks it. Real Chrome with
-# the automation flags stripped, plus a profile that keeps the clearance
-# cookie, is what makes the challenge passable at all.
+# loops forever no matter how many times a human clicks it. Real LAUNCHED
+# Chrome let a human solve the challenge, but the clearance did NOT survive
+# automated navigation — Cloudflare binds it to a live fingerprint, not a
+# cookie. Hence --attach (above); this profile serves only the launched
+# fallback modes.
 PROFILE_DIR = CHECK_DIR / "pj_chrome_profile"
 
 BASE = "https://www.pagesjaunes.fr"
@@ -74,6 +100,12 @@ AGGREGATORS = ("pagesjaunes", "pagespro", "google.", "facebook.", "instagram.",
 # walks all ~119 communes hitting the same wall on page 1, wasting an hour to
 # learn what the third commune already proved.
 MAX_CONSECUTIVE_BLOCKS = 3
+# Cloudflare (measured 2026-08-13 — NOT DataDome, the V2 notes were wrong)
+# plus the old markers. Lowercase; matched against page content.lower().
+BLOCK_MARKERS = ("datadome", "captcha", "just a moment", "cf-chl",
+                 "challenge-platform", "turnstile", "verifying you are human")
+CDP_URL = "http://localhost:9222"
+HTML_DIR = CHECK_DIR / "pj_html"
 # Markup that proves we received a real results page. If NEITHER a listing card
 # NOR this markup is present, the page is a challenge/interstitial dressed as
 # HTTP 200 — and marking it done would poison the resume file, burying pages
@@ -132,31 +164,81 @@ def flush_rows(rows: list[dict]) -> int:
     return len(rows)
 
 
+def reveal_phones(page) -> int:
+    """PJ hides every number behind an "Afficher le N°" button (learned from
+    Sam's working scraper 2026-08-13); the number only exists in the DOM after
+    a click, landing in `#bi-fantomas-<id>`. Click them all, tolerate misses.
+    """
+    clicked = 0
+    # Primary selector = Sam's; fallbacks by visible text.
+    for sel in ("button:has([aria-label='Afficher le numéro'])",
+                "button:has-text('Afficher le N')",
+                "a:has-text('Afficher le N')"):
+        try:
+            buttons = page.query_selector_all(sel)
+        except Exception:
+            continue
+        if not buttons:
+            continue
+        for b in buttons:
+            try:
+                b.click(timeout=2000)
+                clicked += 1
+                time.sleep(0.2)
+            except Exception:
+                continue
+        break
+    if clicked:
+        time.sleep(2.0)          # let the revealed numbers render
+    return clicked
+
+
 def extract_listings(page, search_url: str) -> list[dict]:
-    """Read the result cards. PJ's markup changes; every selector below has a
-    fallback, and a card that yields neither a phone nor a site is dropped
-    rather than written as an empty row."""
+    """Read the result cards. Selectors follow Sam's working scraper
+    (li.bi.bi-generic / .bi-denomination h3 / .bi-address / #bi-fantomas-<id>),
+    each with a fallback. A card that yields neither a phone nor a site is
+    dropped rather than written as an empty row. Call reveal_phones() FIRST.
+    """
     out = []
-    cards = page.query_selector_all("li.bi, article.bi, div.bi-generic, li[id^='bi-']")
+    cards = page.query_selector_all(
+        "li.bi.bi-generic, li.bi, article.bi, div.bi-generic, li[id^='bi-']")
+    seen_ids = set()
     for c in cards:
         try:
-            html = c.inner_html()
             txt = c.inner_text()
         except Exception:
             continue
+        # The card's own id attribute (Sam: card.getAttribute('id')). The old
+        # regex searched inner_html, which never contains the card's own tag.
+        card_id = (c.get_attribute("id") or "").strip()
+        lid = card_id[3:] if card_id.startswith("bi-") else card_id
+        if lid and lid in seen_ids:          # overlapping selectors above
+            continue
+        if lid:
+            seen_ids.add(lid)
 
         name = ""
-        for sel in ("h3", "a.bi-denomination", ".denom", "h2"):
+        for sel in (".bi-denomination h3", "h3", "a.bi-denomination", ".denom", "h2"):
             el = c.query_selector(sel)
             if el:
                 name = (el.inner_text() or "").strip()
                 if name:
                     break
 
+        # Phone: the revealed fantomas div first, raw card text as fallback.
         phone = ""
-        m = PHONE_RE.search(txt.replace(" ", " "))
-        if m:
-            phone = re.sub(r"[\s.\-]", " ", m.group(0)).strip()
+        for sel in ((f"#bi-fantomas-{lid}",) if lid else ()) + (
+                ".bi-fantomas .number-contact", ".number-contact"):
+            el = c.query_selector(sel)
+            if el:
+                m = PHONE_RE.search((el.inner_text() or "").replace(" ", " "))
+                if m:
+                    phone = re.sub(r"[\s.\-]", " ", m.group(0)).strip()
+                    break
+        if not phone:
+            m = PHONE_RE.search(txt.replace(" ", " "))
+            if m:
+                phone = re.sub(r"[\s.\-]", " ", m.group(0)).strip()
 
         website = ""
         for a in c.query_selector_all("a[href^='http']"):
@@ -166,23 +248,20 @@ def extract_listings(page, search_url: str) -> list[dict]:
                 website = href.split("?")[0]
                 break
 
-        postcode, city = "", ""
-        mm = re.search(r"\b(13\d{3})\b\s*([A-ZÀ-ÿ][^\n,]*)", txt)
-        if mm:
-            postcode, city = mm.group(1), mm.group(2).strip()
         addr = ""
-        for sel in (".bi-address", "a.adresse", ".adresse"):
+        for sel in (".bi-address a", ".bi-address", "a.adresse", ".adresse"):
             el = c.query_selector(sel)
             if el:
                 addr = " ".join((el.inner_text() or "").split())
+                addr = addr.replace("Voir le plan", "").strip()
                 break
+        postcode, city = "", ""
+        mm = re.search(r"\b(13\d{3})\b\s*([A-ZÀ-ÿ][^\n,]*)", addr or txt)
+        if mm:
+            postcode, city = mm.group(1), mm.group(2).strip()
 
         if not (phone or website):
             continue
-        lid = ""
-        mid = re.search(r'id="bi-([^"]+)"', html) or re.search(r"data-pjid=\"([^\"]+)\"", html)
-        if mid:
-            lid = mid.group(1)
         out.append({
             "listing_id": lid, "name": name, "phone": phone, "website": website,
             "address": addr, "postcode": postcode, "city": city,
@@ -195,6 +274,12 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Harvest Pages Jaunes for dept-13 bakeries")
     ap.add_argument("--pilot", type=int, default=0, help="only the N busiest communes")
     ap.add_argument("--headful", action="store_true", help="visible browser (clear a challenge)")
+    ap.add_argument("--attach", action="store_true",
+                    help=f"attach to YOUR already-running Chrome over CDP ({CDP_URL}) "
+                         "instead of launching one — see the docstring for setup")
+    ap.add_argument("--dump-html", action="store_true",
+                    help="save every fetched page's HTML under checkpoints/pj_html/ "
+                         "(use on the pilot to verify selectors against reality)")
     args = ap.parse_args()
 
     try:
@@ -212,24 +297,47 @@ def main() -> None:
     written_total = 0
     blocked = 0
     consecutive_blocks = 0
+    if args.dump_html:
+        HTML_DIR.mkdir(parents=True, exist_ok=True)
+
     with sync_playwright() as p:
-        PROFILE_DIR.mkdir(parents=True, exist_ok=True)
         browser = None
-        ctx = p.chromium.launch_persistent_context(
-            str(PROFILE_DIR),
-            channel="chrome",                 # real Chrome, not bundled Chromium
-            headless=not args.headful,
-            locale="fr-FR",
-            timezone_id="Europe/Paris",
-            viewport={"width": 1366, "height": 900},
-            args=["--disable-blink-features=AutomationControlled"],
-            ignore_default_args=["--enable-automation"],
-        )
-        # Belt and braces: some challenge scripts read navigator.webdriver
-        # directly before Chrome's own flag handling settles.
-        ctx.add_init_script(
-            "Object.defineProperty(navigator,'webdriver',{get:()=>undefined});")
-        page = ctx.pages[0] if ctx.pages else ctx.new_page()
+        if args.attach:
+            # ATTACH: never launch. The human's own Chrome carries the trusted
+            # fingerprint and the solved challenge; we borrow its session.
+            # No init scripts, no spoofing — injecting anything into a genuine
+            # session could itself be the tell.
+            try:
+                browser = p.chromium.connect_over_cdp(CDP_URL)
+            except Exception as exc:
+                sys.exit(f"could not attach to Chrome at {CDP_URL} ({exc}).\n"
+                         "Start Chrome first (see the docstring):\n"
+                         '  "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" '
+                         '--remote-debugging-port=9222 '
+                         '--user-data-dir="%LOCALAPPDATA%\\pj_cdp_profile"')
+            if not browser.contexts:
+                sys.exit("attached, but Chrome has no browser context — open a window first")
+            ctx = browser.contexts[0]
+            page = ctx.pages[0] if ctx.pages else ctx.new_page()
+            log.info(f"attached to running Chrome at {CDP_URL} "
+                     f"({len(ctx.pages)} open tab(s))")
+        else:
+            PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+            ctx = p.chromium.launch_persistent_context(
+                str(PROFILE_DIR),
+                channel="chrome",             # real Chrome, not bundled Chromium
+                headless=not args.headful,
+                locale="fr-FR",
+                timezone_id="Europe/Paris",
+                viewport={"width": 1366, "height": 900},
+                args=["--disable-blink-features=AutomationControlled"],
+                ignore_default_args=["--enable-automation"],
+            )
+            # Belt and braces: some challenge scripts read navigator.webdriver
+            # directly before Chrome's own flag handling settles.
+            ctx.add_init_script(
+                "Object.defineProperty(navigator,'webdriver',{get:()=>undefined});")
+            page = ctx.pages[0] if ctx.pages else ctx.new_page()
         page.set_default_navigation_timeout(NAV_TIMEOUT)
 
         def save_state(tag: str = "") -> None:
@@ -266,9 +374,22 @@ def main() -> None:
 
                 content = (page.content() or "")
                 low = content.lower()
-                if status in (403, 429) or "datadome" in low or "captcha" in low:
+                if args.dump_html:
+                    dump = HTML_DIR / f"{where}_p{pageno}.html"
+                    dump.write_text(content, encoding="utf-8")
+                    log.info(f"HTML saved -> {dump.relative_to(CHECK_DIR)}")
+                if status in (403, 429) or any(k in low for k in BLOCK_MARKERS):
                     blocked += 1
                     log.warning(f"{where} p{pageno}: BLOCKED (status {status}).")
+                    if args.attach:
+                        # The trusted session got challenged on automated
+                        # navigation — the exact failure mode we are testing
+                        # for. Stop immediately; retrying burns the session.
+                        log.error("attached session challenged/403'd on navigation. "
+                                  "If this repeats on a fresh solve, PJ is closed "
+                                  "to the CDP route too — record it in docs and stop.")
+                        consecutive_blocks = MAX_CONSECUTIVE_BLOCKS
+                        break
                     if args.headful:
                         # The whole point of --headful: a human is watching.
                         log.warning("─" * 62)
@@ -281,7 +402,7 @@ def main() -> None:
                                 low2 = (page.content() or "").lower()
                             except Exception:
                                 continue
-                            if "datadome" not in low2 and "captcha" not in low2:
+                            if not any(k in low2 for k in BLOCK_MARKERS):
                                 log.info("challenge cleared — saving session and retrying")
                                 save_state("after challenge")
                                 break
@@ -295,7 +416,7 @@ def main() -> None:
                             low = content.lower()
                         except Exception:
                             break
-                        if status in (403, 429) or "datadome" in low or "captcha" in low:
+                        if status in (403, 429) or any(k in low for k in BLOCK_MARKERS):
                             break
                     else:
                         break
@@ -311,6 +432,14 @@ def main() -> None:
                     except Exception:
                         pass
 
+                clicked = reveal_phones(page)      # numbers exist only after this
+                if clicked:
+                    log.info(f"{where} p{pageno}: revealed {clicked} phone number(s)")
+                    if args.dump_html:
+                        # Second dump AFTER the reveal — this is the DOM the
+                        # extractor actually reads.
+                        dump = HTML_DIR / f"{where}_p{pageno}_revealed.html"
+                        dump.write_text(page.content() or "", encoding="utf-8")
                 rows = extract_listings(page, url)
                 n = flush_rows(rows)          # <- on disk before anything else
                 written_total += n
@@ -337,15 +466,18 @@ def main() -> None:
                 consecutive_blocks += 1
 
         save_state("end of run")
-        ctx.close()
-        if browser is not None:
+        if args.attach:
+            # NEVER close the user's own context/tabs — only disconnect CDP.
             browser.close()
+        else:
+            ctx.close()
 
     log.info("─" * 62)
     log.info(f"written={written_total} rows this run -> {OUT_PATH}")
     if blocked:
-        log.warning(f"{blocked} page(s) were blocked. Pages Jaunes uses DataDome; "
-                    "a --headful run to solve one challenge usually unlocks the rest.")
+        log.warning(f"{blocked} page(s) were blocked. Pages Jaunes is behind "
+                    "Cloudflare; if even --attach was challenged on navigation, "
+                    "PJ is closed to free automation — record it and stop.")
     if OUT_PATH.exists():
         with OUT_PATH.open(encoding="utf-8-sig", newline="") as fh:
             allrows = list(csv.DictReader(fh, delimiter=";"))
