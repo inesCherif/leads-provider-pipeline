@@ -28,12 +28,14 @@ import argparse
 import csv
 import logging
 import sys
+from collections import Counter
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from scripts.m1_s8_export import ILLEGAL_XML   # noqa: E402
+from scripts.m1_s8_export import ILLEGAL_XML          # noqa: E402
+from scripts.m2_s2_transform import NAF_LABELS        # noqa: E402  (single source of scope truth)
 
 CHECK_DIR = PROJECT_ROOT / "exports" / "boulangerie" / "checkpoints"
 OUT_DIR   = PROJECT_ROOT / "exports" / "boulangerie"
@@ -140,10 +142,9 @@ def main() -> None:
         log.info(f"--exclude-liquidation: {n_all - len(rows)} rows dropped")
 
     if args.split_naf:
-        sheets = {
-            "Boulangeries (10.71C)": [r for r in rows if r["naf_code"] == "10.71C"],
-            "Terminaux cuisson (10.71B)": [r for r in rows if r["naf_code"] == "10.71B"],
-        }
+        sheets = {f"{code} {NAF_LABELS[code]}"[:31]: [r for r in rows if r["naf_code"] == code]
+                  for code in NAF_LABELS
+                  if any(r["naf_code"] == code for r in rows)}
     else:
         sheets = {"Boulangeries 13": rows}
 
@@ -152,14 +153,14 @@ def main() -> None:
     write_xlsx(xlsx_path, sheets)
     write_csv(csv_path, rows)
 
-    n_c = sum(1 for r in rows if r["naf_code"] == "10.71C")
-    n_b = sum(1 for r in rows if r["naf_code"] == "10.71B")
+    n_by_naf = Counter(r["naf_code"] for r in rows)
     n_named = sum(1 for r in rows if r["nom"])
     n_liq = sum(1 for r in rows if r["procedure_collective"])
     log.info("─" * 64)
     log.info(f"Rows exported                  {len(rows):>6}")
-    log.info(f"  10.71C boulangeries          {n_c:>6}")
-    log.info(f"  10.71B terminaux de cuisson  {n_b:>6}")
+    for code, label in NAF_LABELS.items():
+        if n_by_naf.get(code):
+            log.info(f"  {code} {label:<34.34} {n_by_naf[code]:>6}")
     log.info(f"  with a named contact         {n_named:>6} ({n_named/max(1,len(rows)):.1%})")
     log.info(f"  flagged Liquidation          {n_liq:>6}")
     log.info(f"sheets: {', '.join(sheets)}")

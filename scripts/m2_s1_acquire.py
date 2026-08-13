@@ -58,7 +58,9 @@ PROGRESS_PATH = OUT_DIR / "api_progress.json"
 
 API_BASE = "https://recherche-entreprises.api.gouv.fr/search"
 PARAMS = {
-    "activite_principale": "10.71C,10.71B",
+    # 10.71D added 2026-08-13 (Ines): patisseries share the oven/energy profile,
+    # and Marseille's best-rated artisan bakers include 10.71D registrations.
+    "activite_principale": "10.71C,10.71B,10.71D",
     "departement": "13",
     "limite_matching_etablissements": "100",
     "per_page": "25",

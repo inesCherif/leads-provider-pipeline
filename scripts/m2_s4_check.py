@@ -36,8 +36,8 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent
 XLSX_PATH = PROJECT_ROOT / "exports" / "boulangerie" / "boulangerie_13_v1.xlsx"
 
-NAF_SCOPE = {"10.71C", "10.71B"}
-COUNT_BAND = (600, 1800)
+NAF_SCOPE = {"10.71C", "10.71B", "10.71D"}
+COUNT_BAND = (1000, 2400)   # widened 2026-08-13 when 10.71D joined the scope
 MIN_NAME_COVERAGE = 0.70
 REQUIRED_NON_EMPTY = ["Raison sociale", "Adresse", "Ville"]
 

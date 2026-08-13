@@ -51,10 +51,11 @@ CHECK_DIR = PROJECT_ROOT / "exports" / "boulangerie" / "checkpoints"
 RAW_PATH  = CHECK_DIR / "api_raw.jsonl"
 OUT_PATH  = CHECK_DIR / "etablissements.csv"
 
-NAF_SCOPE = {"10.71C", "10.71B"}
+NAF_SCOPE = {"10.71C", "10.71B", "10.71D"}
 NAF_LABELS = {
     "10.71C": "Boulangerie et boulangerie-patisserie",
     "10.71B": "Cuisson de produits de boulangerie (terminal)",
+    "10.71D": "Patisserie",
 }
 
 # Operator roles, most decision-making first. Matched as lowercase substrings
