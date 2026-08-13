@@ -61,7 +61,7 @@ from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from m2lib_contact import extract_phones, extract_social, is_surtaxe  # noqa: E402
+from m2lib_contact import extract_phones_ctx, extract_social, is_surtaxe  # noqa: E402
 
 PROJECT_ROOT = Path(__file__).parent.parent
 CHECK_DIR = PROJECT_ROOT / "exports" / "boulangerie" / "checkpoints"
@@ -261,7 +261,7 @@ def main() -> None:
             pages_text += " " + html
             for e in extract_emails(html):
                 emails.setdefault(e, url)
-            for p in extract_phones(html):
+            for p in extract_phones_ctx(html):
                 phones.setdefault(p, url)
             time.sleep(DELAY)
 

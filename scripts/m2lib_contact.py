@@ -65,12 +65,74 @@ def is_surtaxe(phone: str) -> bool:
 
 
 def extract_phones(html: str) -> set:
-    """Normalized French phone numbers found in HTML (incl. tel: links)."""
+    """Every digit run in HTML that LOOKS like a French number.
+
+    Deliberately loose — use `extract_phones_ctx()` on real web pages. Kept
+    for short, phone-shaped text (a search snippet, a directory cell) where
+    there is no surrounding markup to reason about.
+    """
     out = set()
     for m in PHONE_CAND_RE.finditer(html or ""):
         p = normalize_fr_phone(m.group(0))
         if p:
             out.add(p)
+    return out
+
+
+# A phone must be ANNOUNCED as one. Measured 2026-08-13: extracting every
+# phone-shaped digit run from a full HTML page agreed with Google Maps only
+# 53% of the time (15% on unconfirmed domains), because minified JavaScript,
+# tracking IDs and CSS hashes are full of 10-digit runs that normalize into
+# plausible-looking numbers — `01 11 24 63 33`, `03 02 18 84 06` and
+# `05 94 14 09 33` were all extracted this way and none is a real line.
+# Requiring a `tel:` href or a nearby phone word is what separates a printed
+# phone number from a coincidence.
+TEL_HREF_RE = re.compile(r"""(?:tel|callto|phone)\s*:\s*(\+?[\d\s.\-()]{9,20})""", re.I)
+PHONE_WORD_RE = re.compile(
+    r"(?:t[ée]l[ée]phone|t[ée]l\.?|phone|appelez|appeler|joindre|joignable|"
+    r"contactez[- ]nous\s+au|réserver\s+au|reserver\s+au|au\s*:)", re.I)
+CTX_WINDOW = 60      # chars after the phone word in which the number must sit
+
+# Deliberately NOT a full numbering-plan table. A first attempt at one
+# rejected 09 52 25 45 55 — a real bakery's line straight out of Google Maps —
+# because the ranges were written from memory. Dropping good data on a guessed
+# table is the same failure as agriculture's DNS-timeout run, where our own
+# error was recorded as a fact about the data. Only ranges that carry no
+# subscriber at all are excluded here; CONTEXT does the real filtering, and
+# the numbers it lets through are measured, not assumed.
+#   01 1x / 01 2x  Île-de-France: unassigned (every JS false positive landed here)
+#   03 0x          unassigned
+#   05 9x          unassigned
+IMPLAUSIBLE_PREFIX = re.compile(r"^0(?:1[12]|30|59)")
+
+
+def plausible_fr_number(phone: str) -> bool:
+    """Reject normalized numbers whose prefix carries no French subscriber."""
+    d = re.sub(r"\D", "", phone or "")
+    if len(d) != 10 or d[0] != "0" or d[1] == "0":
+        return False
+    return not IMPLAUSIBLE_PREFIX.match(d)
+
+
+def extract_phones_ctx(html: str) -> set:
+    """French phones that the page ANNOUNCES as phones.
+
+    Accepts a number only when it sits in a `tel:` href or within
+    CTX_WINDOW characters after a phone word, and only when its prefix is an
+    assigned French range. This is what to use on a crawled web page.
+    """
+    out = set()
+    text = html or ""
+    for m in TEL_HREF_RE.finditer(text):
+        p = normalize_fr_phone(m.group(1))
+        if p and plausible_fr_number(p):
+            out.add(p)
+    for m in PHONE_WORD_RE.finditer(text):
+        window = text[m.end():m.end() + CTX_WINDOW]
+        for c in PHONE_CAND_RE.finditer(window):
+            p = normalize_fr_phone(c.group(0))
+            if p and plausible_fr_number(p):
+                out.add(p)
     return out
 
 
@@ -163,6 +225,31 @@ def selftest() -> int:
     check("date-like ignored", extract_phones("du 01 02 2026 au 03 04 2026"), set())
     check("surtaxé still extracted (flagging is the caller's job)",
           extract_phones("Service client 0891 67 20 00"), {"08 91 67 20 00"})
+
+    print("plausible_fr_number (the false positives measured on real pages):")
+    for bad in ("01 11 24 63 33", "03 02 18 84 06", "05 94 14 09 33",
+                "01 10 91 84 67", "01 21 08 44 38"):
+        check(f"reject {bad}", plausible_fr_number(bad), False)
+    # Real numbers an over-eager table would have destroyed.
+    for good in ("04 91 33 93 85", "06 12 34 56 78", "09 52 25 45 55",
+                 "01 42 60 30 30", "02 40 12 34 56", "01 30 12 34 56",
+                 "09 85 16 07 78", "01 70 98 14 00"):
+        check(f"accept {good}", plausible_fr_number(good), True)
+
+    print("extract_phones_ctx (context required):")
+    check("tel: href", extract_phones_ctx('<a href="tel:+33491339385">appeler</a>'),
+          {"04 91 33 93 85"})
+    check("after 'Tél.'", extract_phones_ctx("<p>Tél. 04 91 33 93 85</p>"),
+          {"04 91 33 93 85"})
+    check("after 'Téléphone :'", extract_phones_ctx("Téléphone : 04.91.33.93.85"),
+          {"04 91 33 93 85"})
+    # The bug this function exists for: a 10-digit run inside minified JS.
+    check("naked JS digit run rejected",
+          extract_phones_ctx('var t=0110918467;const h="0111246333";'), set())
+    check("naked number with no phone word rejected",
+          extract_phones_ctx("<span>04 91 33 93 85</span>"), set())
+    check("loose extract_phones still finds it (snippet use)",
+          extract_phones("<span>04 91 33 93 85</span>"), {"04 91 33 93 85"})
 
     print("extract_social:")
     html = ('<a href="https://www.facebook.com/sharer/sharer.php?u=x">share</a>'

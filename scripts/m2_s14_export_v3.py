@@ -241,6 +241,24 @@ def main() -> None:
             if r.get(key) and s not in store:
                 store[s] = r[key]
 
+    # SWITCHBOARD GUARD. `04 42 56 68 46` was found on 19 different companies'
+    # pages and `04 42 07 88 15` on 5 — a franchise head office or the web
+    # agency's own line in a shared footer, not any shop's number. Selling one
+    # switchboard as 19 bakeries' direct line is the network-domain bug in
+    # phone form. Keyed on SIREN, so a real multi-site company keeping one line
+    # across its own établissements is untouched.
+    by_number = defaultdict(set)
+    siren_of = {b["siret"]: b["siren"] for b in base}
+    for s, claims in phones.items():
+        for _, p, _ in claims:
+            by_number[p].add(siren_of.get(s, s))
+    switchboards = {p for p, sirens in by_number.items() if len(sirens) > 2}
+    if switchboards:
+        for s in list(phones):
+            phones[s] = [c for c in phones[s] if c[1] not in switchboards]
+        log.info(f"switchboard guard: {len(switchboards)} number(s) claimed by "
+                 f">2 companies dropped, e.g. {sorted(switchboards)[:3]}")
+
     n_blocked = 0
     rows = []
     for b in base:
