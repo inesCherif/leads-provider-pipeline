@@ -103,6 +103,10 @@ JUNK_LOCAL = {"noreply", "no-reply", "postmaster", "webmaster", "abuse",
 JUNK_DOMAIN = ("sentry.io", "wixpress.com", "example.com", "wordpress.org",
                "schema.org", "w3.org", "godaddy.com", "sentry-next.wixpress.com")
 IMG_EXT = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".css", ".js")
+# Social pages registered as a "website" by the shop itself (Maps and OSM both
+# allow it). They are captured as social links, never crawled as a site.
+SOCIAL_HOSTS = ("facebook.com", "fb.com", "fb.me", "instagram.com",
+                "linkedin.com", "tiktok.com", "twitter.com", "x.com")
 
 FIELDNAMES = ["siret", "siren", "raison_sociale", "commune", "code_postal",
               "domain", "email", "found_on", "confirmation", "confiance"]
@@ -187,6 +191,11 @@ def load_targets() -> dict:
     seen_pairs = set()
     for r in rows:
         d = urllib.parse.urlparse(r["website"]).netloc.lower().replace("www.", "")
+        # A social page is not a website: Google Maps lets a shop register its
+        # Facebook page as its site, and crawling facebook.com for a bakery's
+        # e-mail yields nothing but a login wall.
+        if any(h in d for h in SOCIAL_HOSTS):
+            continue
         if not d or (r["siret"], d) in seen_pairs:
             continue
         seen_pairs.add((r["siret"], d))

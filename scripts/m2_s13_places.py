@@ -43,6 +43,7 @@ import logging
 import math
 import re
 import sys
+import urllib.parse
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -79,6 +80,22 @@ def haversine_m(lat1, lon1, lat2, lon2) -> float:
     dl = math.radians(lon2 - lon1)
     a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
     return 2 * R * math.asin(math.sqrt(a))
+
+
+# Google Maps lets a business register its Facebook or Instagram page as its
+# "website". Left alone, `facebook.com` ends up in the deliverable's Site web
+# column for a dozen bakeries and m2_s9 wastes a crawl on it. OSM had the same
+# habit and m2_s5 already splits them — this does the same, one layer earlier.
+SOCIAL_HOSTS = ("facebook.com", "fb.com", "fb.me", "instagram.com",
+                "linkedin.com", "tiktok.com", "twitter.com", "x.com")
+
+
+def split_social(url: str) -> tuple:
+    """(website, facebook) — a social URL is not a website."""
+    host = urllib.parse.urlparse(url or "").netloc.lower()
+    if any(h in host for h in SOCIAL_HOSTS):
+        return "", url
+    return url, ""
 
 
 def parse_cp_city(address: str) -> tuple:
@@ -204,13 +221,14 @@ def main() -> None:
                     continue
                 seen_cids.add(cid)
                 cp, city = parse_cp_city(L["address"])
+                site, fb = split_social(L["url"])
                 out.append({
                     "listing_id": cid, "name": L["title"], "phone": L["phone"],
-                    "website": L["url"], "address": L["address"],
+                    "website": site, "address": L["address"],
                     "postcode": cp, "city": city,
                     "lat": L["lat"], "lon": L["lon"], "rating": L["rating"],
                     "category": L["snippet"], "anchor_siret": t["siret"],
-                    "email": "", "facebook": "", "siret": "",
+                    "email": "", "facebook": fb, "siret": "",
                 })
                 try:
                     listing_grid.add(float(L["lat"]), float(L["lon"]))
