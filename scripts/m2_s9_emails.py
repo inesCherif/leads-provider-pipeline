@@ -1,16 +1,21 @@
 """
-M2-S9 — Crawl bakery websites and extract their e-mail addresses
+M2-S9 — Crawl bakery websites: e-mails, phones and social pages
 =================================================================
 "Enter each website and write down the emails it has" — this is that step.
+V3 also writes down the PHONES and the FACEBOOK/INSTAGRAM/LINKEDIN pages,
+because the same fetched HTML carries them and phone is the channel for
+this sector.
 
-Input: any checkpoint that carries a website for a SIRET row. Today that is
-matched.csv (OSM-sourced sites); m2_s8's discovered sites land in the same
-file shape and are picked up automatically.
+Input: every checkpoint that carries a website for a SIRET row —
+matched.csv (OSM + Google Maps harvests) AND discovered_sites.csv (m2_s8
+search discovery). V2 read only matched.csv despite its docstring claiming
+otherwise; the discovered sites were never crawled. Fixed here.
 
 For each domain: fetch the home page plus the pages a French business puts
 its address on — /contact, /mentions-legales, /nous-contacter, /a-propos —
-then extract e-mails from the HTML (including `mailto:` and the `[at]`
-obfuscations) and record where each one was found.
+then extract e-mails (including `mailto:` and the `[at]` obfuscations),
+phones (normalized, surtaxé-flagged) and social page URLs, and record where
+each one was found.
 
 CONFIRMATION IS THE POINT, not the crawl. `EARL DU VIEUX CHENE` guessing to
 `vieuxchene.fr` — a real site belonging to someone else — is how agriculture
@@ -24,6 +29,16 @@ scored:
 
 French sites are legally required to publish their SIRET in the mentions
 légales, which is exactly what makes this test cheap and strong here.
+
+Three guards, each born from a real near-miss (see docs/m2_progress.md),
+now applied to phones as well as e-mails:
+  * >12 addresses (or phones) on one domain = a chain's store list, not a
+    contact page — sophie-lebreuilly.com yielded 94 mailboxes for other
+    départements. Only locally-relevant or generic mailboxes survive;
+    phones cannot be locality-tested, so a phone store-list keeps NOTHING.
+  * a domain claimed by several of our SIRETs is a network site (`reseau`,
+    faible) — franceboulangerie.fr covered three of ours.
+  * escape artifacts (`u003emarius@…`) are stripped, not shipped.
 
 Crash-safety: results are appended and flushed after EVERY domain, and
 `emails_done.txt` records finished domains so a re-run resumes. Nothing is
@@ -45,14 +60,20 @@ import urllib.parse
 from collections import Counter
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).parent))
+from m2lib_contact import extract_phones, extract_social, is_surtaxe  # noqa: E402
+
 PROJECT_ROOT = Path(__file__).parent.parent
 CHECK_DIR = PROJECT_ROOT / "exports" / "boulangerie" / "checkpoints"
 MATCHED_PATH = CHECK_DIR / "matched.csv"
+DISCOVERED_PATH = CHECK_DIR / "discovered_sites.csv"
 OUT_PATH  = CHECK_DIR / "site_emails.csv"
+CONTACTS_PATH = CHECK_DIR / "site_contacts.csv"
 DONE_PATH = CHECK_DIR / "emails_done.txt"
 
 SUBPAGES = ["", "/contact", "/contacts", "/nous-contacter", "/mentions-legales",
-            "/mentions-legales/", "/a-propos", "/infos", "/contactez-nous"]
+            "/mentions-legales/", "/a-propos", "/infos", "/contactez-nous",
+            "/contact.html", "/contact.php", "/nous-trouver"]
 TIMEOUT = 12
 DELAY = 1.0
 
@@ -63,6 +84,8 @@ DELAY = 1.0
 # store list, not a contact page, and only a locally-relevant or generic
 # mailbox may be kept.
 MAX_EMAILS_PER_DOMAIN = 12
+MAX_PHONES_PER_DOMAIN = 12   # same logic; phones have no locality test, so
+                             # a phone store-list keeps nothing at all
 GENERIC_LOCALS = {"contact", "info", "infos", "bonjour", "hello", "accueil",
                   "commande", "commandes", "boutique", "direction"}
 
@@ -83,6 +106,10 @@ IMG_EXT = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".css", ".js")
 
 FIELDNAMES = ["siret", "siren", "raison_sociale", "commune", "code_postal",
               "domain", "email", "found_on", "confirmation", "confiance"]
+CONTACT_FIELDNAMES = ["siret", "siren", "raison_sociale", "commune",
+                      "code_postal", "domain", "phone", "surtaxe",
+                      "phones_autres", "facebook", "instagram", "linkedin",
+                      "found_on", "confirmation", "confiance"]
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)-7s %(message)s",
@@ -105,11 +132,11 @@ def load_done() -> set:
     return set(DONE_PATH.read_text(encoding="utf-8").split()) if DONE_PATH.exists() else set()
 
 
-def flush(rows: list[dict]) -> None:
+def flush(path: Path, fieldnames: list, rows: list) -> None:
     """Append + flush per domain. Nothing accumulates across the network work."""
-    new = not OUT_PATH.exists()
-    with OUT_PATH.open("a", encoding="utf-8-sig", newline="") as fh:
-        w = csv.DictWriter(fh, fieldnames=FIELDNAMES, delimiter=";", quoting=csv.QUOTE_MINIMAL)
+    new = not path.exists()
+    with path.open("a", encoding="utf-8-sig", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=fieldnames, delimiter=";", quoting=csv.QUOTE_MINIMAL)
         if new:
             w.writeheader()
         w.writerows(rows)
@@ -143,8 +170,32 @@ def extract_emails(html: str) -> set:
     return clean
 
 
+def load_targets() -> dict:
+    """domain -> [row dicts]. matched.csv + discovered_sites.csv, deduped."""
+    rows = []
+    if MATCHED_PATH.exists():
+        with MATCHED_PATH.open(encoding="utf-8-sig", newline="") as fh:
+            for r in csv.DictReader(fh, delimiter=";"):
+                if r["website"]:
+                    rows.append({**r, "_name_hint": r.get("listing_name", "")})
+    if DISCOVERED_PATH.exists():
+        with DISCOVERED_PATH.open(encoding="utf-8-sig", newline="") as fh:
+            for r in csv.DictReader(fh, delimiter=";"):
+                if r["website"]:
+                    rows.append({**r, "_name_hint": r.get("enseigne", "")})
+    by_domain: dict = {}
+    seen_pairs = set()
+    for r in rows:
+        d = urllib.parse.urlparse(r["website"]).netloc.lower().replace("www.", "")
+        if not d or (r["siret"], d) in seen_pairs:
+            continue
+        seen_pairs.add((r["siret"], d))
+        by_domain.setdefault(d, []).append(r)
+    return by_domain
+
+
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Crawl bakery sites for e-mail addresses")
+    ap = argparse.ArgumentParser(description="Crawl bakery sites for e-mails, phones, socials")
     ap.add_argument("--limit", type=int, default=0)
     args = ap.parse_args()
 
@@ -153,17 +204,10 @@ def main() -> None:
     except ImportError:
         sys.exit("requests required:\n  pip install requests")
 
-    if not MATCHED_PATH.exists():
-        sys.exit(f"{MATCHED_PATH} not found — run scripts/m2_s7_match.py first.")
-    with MATCHED_PATH.open(encoding="utf-8-sig", newline="") as fh:
-        matched = [r for r in csv.DictReader(fh, delimiter=";") if r["website"]]
-
-    # One crawl per domain, even when several rows share it (chains).
-    by_domain: dict[str, list[dict]] = {}
-    for r in matched:
-        d = urllib.parse.urlparse(r["website"]).netloc.lower().replace("www.", "")
-        if d:
-            by_domain.setdefault(d, []).append(r)
+    by_domain = load_targets()
+    if not by_domain:
+        sys.exit("No websites found in matched.csv / discovered_sites.csv — "
+                 "run m2_s7_match.py (and m2_s8_websites.py) first.")
 
     done = load_done()
     todo = [d for d in by_domain if d not in done]
@@ -180,19 +224,19 @@ def main() -> None:
     })
 
     stats = Counter()
-    written = 0
+    written = contacts_written = 0
     for i, domain in enumerate(todo, 1):
         rows_for_domain = by_domain[domain]
-        ref = rows_for_domain[0]
         wanted_tokens = set()
         wanted_sirets, wanted_sirens, wanted_cps = set(), set(), set()
         for r in rows_for_domain:
-            wanted_tokens |= name_tokens(f"{r['raison_sociale']} {r['listing_name']}")
+            wanted_tokens |= name_tokens(f"{r['raison_sociale']} {r['_name_hint']}")
             wanted_sirets.add(r["siret"])
             wanted_sirens.add(r["siren"])
             wanted_cps.add(r["code_postal"])
 
-        emails: dict[str, str] = {}     # email -> page it was found on
+        emails: dict = {}       # email -> page it was found on
+        phones: dict = {}       # normalized phone -> page it was found on
         pages_text = ""
         reached = False
         for sub in SUBPAGES:
@@ -208,6 +252,8 @@ def main() -> None:
             pages_text += " " + html
             for e in extract_emails(html):
                 emails.setdefault(e, url)
+            for p in extract_phones(html):
+                phones.setdefault(p, url)
             time.sleep(DELAY)
 
         if not reached:
@@ -215,6 +261,8 @@ def main() -> None:
             with DONE_PATH.open("a", encoding="utf-8") as f:
                 f.write(domain + "\n")
             continue
+
+        social = extract_social(pages_text)
 
         # Confirmation — is this site really THIS business?
         digits_blob = re.sub(r"[\s.\-]", "", pages_text)
@@ -243,6 +291,12 @@ def main() -> None:
             stats["shared_network_domain"] += 1
         stats[f"conf:{confirmation}"] += 1
 
+        # A phone store-list: unlike mailboxes (abbeville@…), phones carry no
+        # locality marker we can test, so past the cap NOTHING is kept.
+        if len(phones) > MAX_PHONES_PER_DOMAIN:
+            stats["phone_store_list_dropped"] += 1
+            phones = {}
+
         out = []
         for r in rows_for_domain:
             keep = emails
@@ -263,20 +317,46 @@ def main() -> None:
                     "confirmation": confirmation, "confiance": confiance,
                 })
         if out:
-            flush(out)                       # on disk before the next domain
+            flush(OUT_PATH, FIELDNAMES, out)     # on disk before the next domain
             written += len(out)
             stats["domains_with_email"] += 1
+
+        if phones or any(social.values()):
+            ordered = sorted(phones, key=lambda p: (is_surtaxe(p), p))
+            primary = ordered[0] if ordered else ""
+            crows = []
+            for r in rows_for_domain:
+                crows.append({
+                    "siret": r["siret"], "siren": r["siren"],
+                    "raison_sociale": r["raison_sociale"], "commune": r["commune"],
+                    "code_postal": r["code_postal"], "domain": domain,
+                    "phone": primary,
+                    "surtaxe": "oui" if primary and is_surtaxe(primary) else "",
+                    "phones_autres": " | ".join(ordered[1:4]),
+                    "facebook": social["facebook"],
+                    "instagram": social["instagram"],
+                    "linkedin": social["linkedin"],
+                    "found_on": phones.get(primary, ""),
+                    "confirmation": confirmation, "confiance": confiance,
+                })
+            flush(CONTACTS_PATH, CONTACT_FIELDNAMES, crows)
+            contacts_written += len(crows)
+            stats["domains_with_phone_or_social"] += 1
+
         with DONE_PATH.open("a", encoding="utf-8") as f:
             f.write(domain + "\n")
         log.info(f"[{i}/{len(todo)}] {domain:38.38s} emails={len(emails)} "
-                 f"conf={confirmation:6s} written={written}")
+                 f"phones={len(phones)} conf={confirmation:6s} "
+                 f"written={written}+{contacts_written}")
 
     log.info("─" * 62)
-    log.info(f"written={written} rows -> {OUT_PATH}")
+    log.info(f"written={written} email rows -> {OUT_PATH}")
+    log.info(f"written={contacts_written} contact rows -> {CONTACTS_PATH}")
     log.info(f"domains yielding an email: {stats['domains_with_email']} | "
+             f"phone/social: {stats['domains_with_phone_or_social']} | "
              f"unreachable: {stats['unreachable']}")
-    for k in sorted(k for k in stats if k.startswith("conf:")):
-        log.info(f"  {k:<18} {stats[k]}")
+    for k in sorted(k for k in stats if k.startswith(("conf:", "phone_", "chain_"))):
+        log.info(f"  {k:<26} {stats[k]}")
     log.info("Only 'confirme' rows may be pattern-expanded (m2_s10) or shipped "
              "without a warning column.")
 

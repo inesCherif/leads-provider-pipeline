@@ -1,0 +1,301 @@
+"""
+M2-S14 — Build the enriched deliverable (V3)
+=============================================
+V2 shipped 105 phones on 1,704 bakeries — a list nobody can call. V3 adds the
+Google-Maps sweep (m2_s13), the API-backed website discovery (m2_s8) and the
+phones/socials read off the sites themselves (m2_s9), and writes
+
+    exports/boulangerie/boulangerie_13_v3.xlsx    <- the enriched deliverable
+    exports/boulangerie/boulangerie_13_v3.csv
+
+V2's files are left untouched, so the previous deliverable stays reproducible.
+
+Inputs (each optional — the export degrades, it never crashes on a missing
+harvest):
+    etablissements.csv   the V1 population, one row per établissement
+    matched.csv          phone/website/facebook/email from OSM, Maps, PJ
+    site_emails.csv      e-mails read off the businesses' own websites
+    site_contacts.csv    phones + facebook/instagram/linkedin off those sites
+    discovered_sites.csv candidate sites + geo-gated snippet phones (m2_s8)
+    verified_emails.csv  SMTP verdict per address
+
+Rules carried over from agriculture and V2, all bought with incidents:
+
+  * AN ADDRESS VERIFIED `invalide` NEVER SHIPS (agriculture migration 015:
+    marking an address invalid did not stop it exporting, so verification
+    silently accomplished nothing).
+  * A `faible`-confidence address ships only with its confidence stated.
+  * EVERY PHONE IS NORMALIZED to `0X XX XX XX XX` and carries its source, so
+    a disagreement between sources is auditable instead of invisible.
+  * A SURTAXÉ number (089/081/082) is flagged, never silently shipped and
+    never silently dropped. Agriculture once collapsed 12.5% of its base as
+    "duplicates" because thousands of rows shared one premium-rate hotline
+    printed by a directory — the number was real, it just was not the
+    business's own line. Ranked last, disclosed in its own column.
+
+Phone precedence (best first) — a site that proves its own SIRET beats a
+directory, and a snippet scraped off a search result is the weakest claim:
+    site/confirme > osm > serper_places > pagesjaunes > site/faible > snippet
+
+Usage:
+    python scripts/m2_s14_export_v3.py
+    python scripts/m2_s14_export_v3.py --only-reachable
+"""
+
+import argparse
+import csv
+import logging
+import sys
+from collections import Counter, defaultdict
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
+
+from scripts.m1_s8_export import ILLEGAL_XML            # noqa: E402
+from m2lib_contact import normalize_fr_phone, is_surtaxe  # noqa: E402
+
+CHECK_DIR = PROJECT_ROOT / "exports" / "boulangerie" / "checkpoints"
+OUT_DIR   = PROJECT_ROOT / "exports" / "boulangerie"
+BASENAME  = "boulangerie_13_v3"
+
+COLUMNS = [
+    ("siret",                "SIRET"),
+    ("siren",                "SIREN"),
+    ("raison_sociale",       "Raison sociale"),
+    ("enseigne",             "Enseigne"),
+    ("activite",             "Activite"),
+    ("naf_code",             "Code NAF"),
+    ("adresse",              "Adresse"),
+    ("code_postal",          "Code postal"),
+    ("commune",              "Ville"),
+    ("prenom",               "Prenom"),
+    ("nom",                  "Nom"),
+    ("fonction",             "Fonction"),
+    ("telephone",            "Telephone"),
+    ("telephone_source",     "Telephone source"),
+    ("telephone_surtaxe",    "Telephone surtaxe"),
+    ("email",                "Email"),
+    ("email_statut",         "Email verifie"),
+    ("email_confiance",      "Email confiance"),
+    ("autres_emails",        "Autres emails"),
+    ("site_web",             "Site web"),
+    ("facebook",             "Facebook"),
+    ("instagram",            "Instagram"),
+    ("linkedin",             "LinkedIn"),
+    ("source_contact",       "Source contact"),
+    ("contact",              "Contact (personne morale)"),
+    ("forme_juridique",      "Forme juridique"),
+    ("date_creation",        "Date de creation"),
+    ("anciennete_ans",       "Anciennete (ans)"),
+    ("tranche_effectif",     "Tranche effectif"),
+    ("est_siege",            "Siege social"),
+    ("procedure_collective", "Procedure collective"),
+]
+TEXT_COLUMNS = {"siret", "siren", "code_postal", "naf_code", "date_creation", "telephone"}
+
+# Best-first. A confirmed domain with an SMTP accept is a fact; a franchise
+# mailbox on an unconfirmed site is a guess. They must not sort equally.
+RANK = {("confirme", "valide"): 0, ("confirme", "non verifie"): 1,
+        ("confirme", "risque"): 2, ("faible", "valide"): 3,
+        ("faible", "non verifie"): 4, ("faible", "risque"): 5}
+
+# Phone provenance ranking. Lower is better; surtaxé adds +100 so a premium
+# number always loses to any ordinary one, whatever its source.
+PHONE_RANK = {"site/confirme": 0, "osm": 1, "serper_places": 2,
+              "pagesjaunes": 3, "site/faible": 4, "snippet": 5}
+
+logging.basicConfig(level=logging.INFO,
+                    format="%(asctime)s %(levelname)-7s %(message)s",
+                    datefmt="%H:%M:%S")
+log = logging.getLogger("m2_s14")
+
+
+def read(name: str) -> list[dict]:
+    p = CHECK_DIR / name
+    if not p.exists():
+        log.info(f"(skip) {name} not present — that enrichment did not run")
+        return []
+    with p.open(encoding="utf-8-sig", newline="") as fh:
+        return list(csv.DictReader(fh, delimiter=";"))
+
+
+def cell(row: dict, col: str) -> str:
+    return ILLEGAL_XML.sub("", str(row.get(col) or "")).strip()
+
+
+def write_xlsx(path: Path, rows: list[dict]) -> None:
+    from openpyxl import Workbook
+    from openpyxl.cell import WriteOnlyCell
+    from openpyxl.styles import Font
+    path.parent.mkdir(parents=True, exist_ok=True)
+    wb = Workbook(write_only=True)
+    ws = wb.create_sheet(title="Boulangeries 13")
+    ws.freeze_panes = "A2"
+    head = []
+    for _, h in COLUMNS:
+        c = WriteOnlyCell(ws, value=h)
+        c.font = Font(bold=True)
+        head.append(c)
+    ws.append(head)
+    for r in rows:
+        out = []
+        for col, _ in COLUMNS:
+            c = WriteOnlyCell(ws, value=cell(r, col))
+            if col in TEXT_COLUMNS:
+                c.number_format = "@"
+            out.append(c)
+        ws.append(out)
+    wb.save(path)
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description="Build the V3 boulangerie deliverable")
+    ap.add_argument("--only-reachable", action="store_true",
+                    help="keep only rows with a phone or an email")
+    args = ap.parse_args()
+
+    base = read("etablissements.csv")
+    if not base:
+        sys.exit("etablissements.csv missing — run scripts/m2_s2_transform.py first.")
+    matched = read("matched.csv")
+    site_emails = read("site_emails.csv")
+    site_contacts = read("site_contacts.csv")
+    discovered = read("discovered_sites.csv")
+    verified = {r["email"].lower(): r["verdict"] for r in read("verified_emails.csv")}
+
+    # siret -> [(rank, phone, source)] — every claim kept, best one exported.
+    phones: dict = defaultdict(list)
+    website, facebook, instagram, linkedin = {}, {}, {}, {}
+    srcs = defaultdict(set)
+    cand: dict = defaultdict(list)   # siret -> [(rank, email, verdict, conf, src)]
+
+    def add_phone(siret, raw, source):
+        p = normalize_fr_phone(raw)
+        if not p:
+            return
+        rank = PHONE_RANK.get(source, 9) + (100 if is_surtaxe(p) else 0)
+        phones[siret].append((rank, p, source))
+
+    for m in matched:
+        s, src = m["siret"], m["source"]
+        add_phone(s, m.get("phone", ""), src)
+        if m.get("phone"):
+            srcs[s].add(src)
+        if m.get("website") and s not in website:
+            website[s] = m["website"]
+            srcs[s].add(src)
+        if m.get("facebook") and s not in facebook:
+            facebook[s] = m["facebook"]
+        if m.get("email"):
+            e = m["email"].lower()
+            v = verified.get(e, "non verifie")
+            cand[s].append((RANK.get(("confirme", v), 9), e, v, "confirme", src))
+            srcs[s].add(src)
+
+    for r in site_emails:
+        s, e = r["siret"], r["email"].lower()
+        v = verified.get(e, "non verifie")
+        conf = r.get("confiance") or "faible"
+        cand[s].append((RANK.get((conf, v), 9), e, v, conf, "site"))
+        srcs[s].add("site")
+        if r.get("domain") and s not in website:
+            website[s] = "https://" + r["domain"]
+
+    for r in site_contacts:
+        s = r["siret"]
+        src = "site/confirme" if r.get("confiance") == "confirme" else "site/faible"
+        add_phone(s, r.get("phone", ""), src)
+        if r.get("phone"):
+            srcs[s].add("site")
+        for key, store in (("facebook", facebook), ("instagram", instagram),
+                           ("linkedin", linkedin)):
+            if r.get(key) and s not in store:
+                store[s] = r[key]
+        if r.get("domain") and s not in website:
+            website[s] = "https://" + r["domain"]
+
+    for r in discovered:
+        s = r["siret"]
+        # Snippet phones are geo-gated at collection (m2_s8 writes them only
+        # when the snippet showed our commune or CP) and rank last regardless.
+        if r.get("phone") and r.get("snippet_geo_ok"):
+            add_phone(s, r["phone"], "snippet")
+            srcs[s].add("snippet")
+        if r.get("website") and s not in website:
+            website[s] = r["website"]
+            srcs[s].add("recherche")
+        for key, store in (("facebook", facebook), ("instagram", instagram)):
+            if r.get(key) and s not in store:
+                store[s] = r[key]
+
+    n_blocked = 0
+    rows = []
+    for b in base:
+        s = b["siret"]
+        # An address proven undeliverable must not ship. Before agriculture's
+        # migration 015 this filter did not exist and verification bought
+        # nothing at all.
+        usable = sorted([c for c in cand.get(s, []) if c[2] != "invalide"])
+        n_blocked += len(cand.get(s, [])) - len(usable)
+        best = usable[0] if usable else None
+        ph = sorted(phones.get(s, []))
+        best_ph = ph[0] if ph else None
+        r = dict(b)
+        r.update({
+            "telephone": best_ph[1] if best_ph else "",
+            "telephone_source": best_ph[2] if best_ph else "",
+            "telephone_surtaxe": "oui" if best_ph and is_surtaxe(best_ph[1]) else "",
+            "email": best[1] if best else "",
+            "email_statut": best[2] if best else "",
+            "email_confiance": best[3] if best else "",
+            "autres_emails": str(len(usable) - 1) if len(usable) > 1 else "",
+            "site_web": website.get(s, ""),
+            "facebook": facebook.get(s, ""),
+            "instagram": instagram.get(s, ""),
+            "linkedin": linkedin.get(s, ""),
+            "source_contact": ", ".join(sorted(srcs.get(s, ()))),
+        })
+        rows.append(r)
+
+    if args.only_reachable:
+        before = len(rows)
+        rows = [r for r in rows if r["telephone"] or r["email"]]
+        log.info(f"--only-reachable: {before - len(rows)} rows without any contact dropped")
+
+    xlsx = OUT_DIR / f"{BASENAME}.xlsx"
+    write_xlsx(xlsx, rows)
+    csv_path = OUT_DIR / f"{BASENAME}.csv"
+    with csv_path.open("w", encoding="utf-8-sig", newline="") as fh:
+        w = csv.writer(fh, delimiter=";", quoting=csv.QUOTE_MINIMAL)
+        w.writerow([h for _, h in COLUMNS])
+        for r in rows:
+            w.writerow([cell(r, c) for c, _ in COLUMNS])
+
+    n = len(rows)
+    n_ph = sum(1 for r in rows if r["telephone"])
+    n_em = sum(1 for r in rows if r["email"])
+    n_web = sum(1 for r in rows if r["site_web"])
+    n_soc = sum(1 for r in rows if r["facebook"] or r["instagram"])
+    n_reach = sum(1 for r in rows if r["telephone"] or r["email"])
+    n_surt = sum(1 for r in rows if r["telephone_surtaxe"])
+    log.info("─" * 62)
+    log.info(f"Rows                       {n:>6}")
+    log.info(f"  with a phone             {n_ph:>6} ({n_ph/max(1,n):.1%})")
+    log.info(f"  with an EMAIL            {n_em:>6} ({n_em/max(1,n):.1%})")
+    log.info(f"  with a website           {n_web:>6}")
+    log.info(f"  with facebook/instagram  {n_soc:>6}")
+    log.info(f"  reachable (phone|email)  {n_reach:>6} ({n_reach/max(1,n):.1%})")
+    log.info(f"  phone sources: {dict(Counter(r['telephone_source'] for r in rows if r['telephone']))}")
+    log.info(f"  surtaxe phones (flagged, not dropped): {n_surt}")
+    log.info(f"  email verdicts: {dict(Counter(r['email_statut'] for r in rows if r['email']))}")
+    log.info(f"  email confiance: {dict(Counter(r['email_confiance'] for r in rows if r['email']))}")
+    log.info(f"  addresses withheld as proven-invalid: {n_blocked}")
+    log.info(f"written -> {xlsx}")
+    log.info(f"written -> {csv_path}")
+    log.info("Next: python scripts/m2_s15_check_v3.py --strict")
+
+
+if __name__ == "__main__":
+    main()
