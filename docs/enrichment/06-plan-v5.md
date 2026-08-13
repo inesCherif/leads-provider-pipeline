@@ -1,4 +1,14 @@
-# 06 — The V5 plan (approved by Ines 2026-08-13) — START CODING HERE
+# 06 — The V5 plan (approved by Ines 2026-08-13) — ✅ EXECUTED 2026-08-13
+
+> **Status: done, with plan changes forced by measurement.** V5 shipped the
+> same day: 721 phones · 287 e-mails · 48.2% reachable · 0 €. Read the V5
+> entry in `docs/m2_progress.md` — the pilot measured raw snippet precision
+> at **32%, not 76%**, so m2_s16 gained a name gate ("untouched" below is
+> superseded); Tavily was split ~600 phones / ~200 websites by Ines; the
+> tavily backend exposed and purged a V4 contamination (56 junk e-mails);
+> the PJ attach is CODED but not yet run (needs Ines at the keyboard);
+> `m2_s20_verify_api.py` now answers the residential-IP SMTP wall for free
+> (needs the Reoon key). Kept below for the reasoning.
 
 ## Context
 

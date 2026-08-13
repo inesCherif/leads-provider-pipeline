@@ -29,11 +29,16 @@ three times. Supabase ingestion is a later step, after delivery.
 | V1 | 2026-08-13 | — | — | — | — | 1,704 rows from the registry, 90.5% with a named dirigeant |
 | V2 | 2026-08-13 | 105 | 34 | 57 | 6.6% | OSM harvest + site crawl; every scraped source blocked |
 | V3 | 2026-08-13 | 590 | 242 | 1,297 | 39.1% | **Free-tier APIs**: Serper /maps geo-sweep, Tavily, ddgs |
-| V4 | 2026-08-13 | **674** | **333** | **1,302** | **47.7%** | Named queries, SMTP-proven patterns, corroboration |
-| V5 | planned | ~760–950 | ~340–370 | — | 52–75% | Fresh Tavily key on SERP mining + PJ CDP attach ([plan](06-plan-v5.md)) |
+| V4 | 2026-08-13 | 674 | 333 | 1,302 | 47.7% | Named queries, SMTP-proven patterns, corroboration |
+| V5 | 2026-08-13 | **721** | **287**¹ | **1,010**¹ | **48.2%** | Tavily name-gated SERP mining + the aggregator purge ([entry](../m2_progress.md)) |
 
-Current deliverable: **`exports/boulangerie/boulangerie_13_v4.xlsx`** (1,704
-rows, 32 columns). Gate: `python scripts/m2_s17_check_v4.py --strict` → 19
+¹ V5's e-mail/site counts are LOWER because **V4 was contaminated**: 56 of its
+333 e-mails and ~290 of its "sites" were aggregator/registry pages sold as the
+shops' own (measured, 0 unexplained losses — see the V5 progress entry). PJ
+attach + ddgs mining + m2_s20 API verification are still in flight and only add.
+
+Current deliverable: **`exports/boulangerie/boulangerie_13_v5.xlsx`** (1,704
+rows, 32 columns). Gate: `python scripts/m2_s19_check_v5.py --strict` → 21
 checks, 0 failed. `exports/` is gitignored — files exist locally only.
 
 **Total money spent across all of it: 0 €.**
