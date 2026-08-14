@@ -97,6 +97,16 @@ def ratio(a: set, b: set) -> float:
     return len(a & b) / len(a | b)
 
 
+def name_score(nm: set, r: dict) -> float:
+    """Best overlap against the merged bag OR either name alone."""
+    best = ratio(nm, r["_tokens"])
+    for tk in r.get("_tok_alt", ()):
+        s = ratio(nm, tk)
+        if s > best:
+            best = s
+    return best
+
+
 def haversine_m(lat1, lon1, lat2, lon2) -> float:
     R = 6371000.0
     p1, p2 = math.radians(lat1), math.radians(lat2)
@@ -149,7 +159,15 @@ def main() -> None:
     by_commune = defaultdict(list)
     by_cp = defaultdict(list)
     for r in ours:
+        # Merged bag for exact comparison, but ALSO each name on its own:
+        # a directory prints the TRADE name ("Le Bar a Pain") while the
+        # registry holds the LEGAL one ("BOULANGERIE PATISSERIE DUPONT ET
+        # FILS"). Merging them dilutes the score — the trade name matches
+        # perfectly yet lands at 2/4 = 0.50 and is rejected. Scoring the
+        # names separately and keeping the best is what a human would do.
         r["_tokens"] = tokens(f"{r['raison_sociale']} {r['enseigne']}")
+        r["_tok_alt"] = [tk for tk in (tokens(r["raison_sociale"]),
+                                       tokens(r["enseigne"])) if tk]
         r["_lat"], r["_lon"] = fnum(r["latitude"]), fnum(r["longitude"])
         by_commune[norm(r["commune"])].append(r)
         by_cp[r["code_postal"]].append(r)
@@ -197,7 +215,7 @@ def main() -> None:
             near.sort(key=lambda x: x[0])
             if near:
                 nm = tokens(name)
-                named_hits = [(d, r) for d, r in near if ratio(nm, r["_tokens"]) >= FUZZY_MIN]
+                named_hits = [(d, r) for d, r in near if name_score(nm, r) >= FUZZY_MIN]
                 if named_hits:
                     # Ambiguity: two different companies both close AND named alike.
                     if len({r["siret"] for _, r in named_hits}) > 1 and \
@@ -235,14 +253,14 @@ def main() -> None:
                 continue
             why = ""
             for pool in pools:
-                exact = [r for r in pool if r["_tokens"] == nm]
+                exact = [r for r in pool if r["_tokens"] == nm or nm in r["_tok_alt"]]
                 if len({r["siret"] for r in exact}) == 1:
                     cand = ("name_commune", exact[0]["siret"], None)
                     break
                 if len(exact) > 1:
                     why = "ambiguous: same name twice in the commune"
                     continue          # a wider pool cannot disambiguate this
-                scored = sorted(((ratio(nm, r["_tokens"]), r) for r in pool),
+                scored = sorted(((name_score(nm, r), r) for r in pool),
                                 key=lambda x: -x[0])
                 if scored and scored[0][0] >= FUZZY_MIN:
                     if len(scored) > 1 and scored[1][0] >= scored[0][0] - 0.02:

@@ -101,7 +101,11 @@ BASE = "https://www.pagesjaunes.fr"
 WHAT = "boulangerie-patisserie"      # URL slug, used by the goto/launched modes
 WHAT_HUMAN = "boulangerie patisserie"  # what a human types into the form
 PAGE_DELAY = (3.0, 6.0)      # seconds between pages, randomised
-MAX_PAGES_PER_COMMUNE = 8    # PJ paginates ~20/page; 8 covers Marseille arrondissements
+MAX_PAGES_PER_COMMUNE = 20   # PJ paginates 20/page. Raised from 8 on 2026-08-14:
+                             # 34 communes HIT the old cap and Marseille 1er alone
+                             # advertises 370 results (~19 pages), so 8 was truncating
+                             # exactly the densest areas — where 453 of the 905 still
+                             # phoneless businesses live.
 NAV_TIMEOUT = 30_000
 HUMAN_WAIT_MIN = 5.0         # minutes to wait for a hand-solved challenge
 
@@ -176,7 +180,11 @@ def pj_location_slug(commune: str, cp: str) -> str:
     city page that will not paginate far enough.
     """
     c = slug(commune)
-    if c == "marseille" and cp.startswith("130") and cp[3:].isdigit():
+    # Our own registry data spells Marseille several ways — "MARSEILLE",
+    # "MARSEILLE 11", "MARSEILLE 11EME" — so match on the prefix and let the
+    # POSTCODE decide the arrondissement. Before this, "MARSEILLE 11EME" built
+    # `marseille-11eme-13`, a slug PJ does not use.
+    if c.startswith("marseille") and cp.startswith("130") and cp[3:].isdigit():
         n = int(cp[3:])
         if 1 <= n <= 16:
             return f"marseille-{'1er' if n == 1 else str(n) + 'e'}-arrondissement-13"
