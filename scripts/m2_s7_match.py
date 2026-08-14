@@ -217,28 +217,42 @@ def main() -> None:
 
         # 4/5. Name, but ONLY with location agreement.
         if cand is None and name:
-            pool = by_commune.get(commune) or by_cp.get(cp)
-            if pool is None:
+            # TIGHTEST POOL FIRST, then widen. A directory prints the city as
+            # "Marseille", so the commune pool holds ~618 rows and honest
+            # listings die as "two equally-good fuzzy names"; the postcode
+            # pool is one arrondissement. But the two postcodes legitimately
+            # disagree — a company's registered address is often a different
+            # arrondissement from its shop — so the commune pool must remain
+            # the fallback, or correct matches are lost (measured: LE TRIANON,
+            # listed 13001, registered elsewhere in Marseille).
+            pools = [p for p in (by_cp.get(cp), by_commune.get(commune)) if p]
+            if not pools:
                 rejects["no location on listing — name alone is not enough"] += 1
                 continue
             nm = tokens(name)
             if not nm:
                 rejects["listing name is only generic words"] += 1
                 continue
-            exact = [r for r in pool if r["_tokens"] == nm]
-            if len({r["siret"] for r in exact}) == 1:
-                cand = ("name_commune", exact[0]["siret"], None)
-            elif len(exact) > 1:
-                rejects["ambiguous: same name twice in the commune"] += 1
-                continue
-            else:
+            why = ""
+            for pool in pools:
+                exact = [r for r in pool if r["_tokens"] == nm]
+                if len({r["siret"] for r in exact}) == 1:
+                    cand = ("name_commune", exact[0]["siret"], None)
+                    break
+                if len(exact) > 1:
+                    why = "ambiguous: same name twice in the commune"
+                    continue          # a wider pool cannot disambiguate this
                 scored = sorted(((ratio(nm, r["_tokens"]), r) for r in pool),
                                 key=lambda x: -x[0])
                 if scored and scored[0][0] >= FUZZY_MIN:
                     if len(scored) > 1 and scored[1][0] >= scored[0][0] - 0.02:
-                        rejects["ambiguous: two equally-good fuzzy names"] += 1
+                        why = "ambiguous: two equally-good fuzzy names"
                         continue
                     cand = ("name_fuzzy", scored[0][1]["siret"], None)
+                    break
+            if cand is None and why:
+                rejects[why] += 1
+                continue
 
         if cand is None:
             rejects["no acceptable match"] += 1

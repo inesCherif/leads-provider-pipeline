@@ -13,32 +13,47 @@ equivalent is enforced the same way: rows are APPENDED AND FLUSHED after every
 single page, and the log prints `written=` (rows on disk), never `collected=`
 (rows in memory). A crash costs one page.
 
-Resume: `pj_done.txt` records every completed search URL. Re-running skips
-them. Kill it any time.
+Resume: `pj_done.txt` records a `{commune}-{cp}|p{n}` key per harvested page,
+independent of how that page was reached. Re-running skips them. Kill it any
+time.
 
-Politeness: PAGE_DELAY between pages, one browser, one context, headless off
-on the first run if a challenge appears (--headful). This is a slow crawl over
-~140 communes, not a hammering.
+Politeness: PAGE_DELAY between pages, one browser, one context. This is a slow
+crawl over 162 commune/postcode pairs, not a hammering.
 
 Output: exports/boulangerie/checkpoints/pj_listings.csv
-        (name, phone, website, address, postcode, city, listing_id)
-Matching to SIRET rows is m2_s7's job, and requires location agreement.
+        (listing_id, name, phone, mobile, website, address, postcode, city,
+         category, detail_url, search_url)
+Matching to SIRET rows is m2_s7's job, and requires location agreement —
+`postcode` and `city` are load-bearing there, because PJ gives no lat/lon.
 
-ATTACH MODE (V5, 2026-08-13). Every LAUNCHED browser — bundled Chromium and
-real Chrome alike — was detected by Cloudflare, and a human-solved
-`cf_clearance` did not survive automated navigation. The one untested free
-route: the human runs her OWN Chrome with remote debugging and solves the
-challenge as a normal visitor; this script then ATTACHES to that trusted,
-living session over CDP and never launches anything.
+ATTACH + IN-PAGE MODE (V5, 2026-08-13) — the route that has never been tried.
+Every LAUNCHED browser (bundled Chromium and real Chrome alike) was detected
+by Cloudflare, and a human-solved `cf_clearance` did not survive
+`page.goto()`. Two things follow, and this script now does both:
+
+  1. **Never launch.** The human runs her OWN Chrome with remote debugging and
+     solves the challenge as a normal visitor; we ATTACH over CDP.
+  2. **Never navigate.** `--attach` defaults to IN-PAGE navigation: we type
+     into PJ's own search field, click its search button, and advance by
+     clicking its "page suivante" link. The measured failure was *automated
+     navigation*, so the fix is to stop navigating — every fetch becomes an
+     in-page click/XHR inside the session Cloudflare already trusts.
+     `--goto` forces the old constructed-URL route for comparison.
 
     1. Close all Chrome windows, then start:
        "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" ^
            --remote-debugging-port=9222 ^
            --user-data-dir="%LOCALAPPDATA%\\pj_cdp_profile"
-    2. Browse to pagesjaunes.fr YOURSELF, pass the challenge, check a search
-       for "boulangerie marseille" really shows results.
+    2. Browse to pagesjaunes.fr YOURSELF, pass the challenge, and leave a
+       bakery results page open in that tab.
     3. python scripts/m2_s6_pagesjaunes.py --attach --pilot 1 --dump-html
-       -> inspect the saved HTML, fix selectors if reality differs, scale up.
+       -> JUDGE IT BY THE DUMPED HTML, never by an HTTP 200. Count
+       `li.bi.bi-generic` cards in the dump and compare with the rows written;
+       20 cards -> 3 rows means the selectors are wrong, not that PJ is empty.
+       Every selector logs which fallback matched, so the pilot reports the
+       real DOM instead of failing silently.
+    4. Scale up. On a challenge mid-crawl the run PAUSES for up to 5 minutes
+       so you can solve it in the visible window, then resumes by itself.
 
 The card selectors were rewritten 2026-08-13 from a WORKING scraper of Sam's:
 cards are `li.bi.bi-generic`, the name sits in `.bi-denomination h3`, and —
@@ -83,10 +98,27 @@ STATE_PATH = CHECK_DIR / "pj_storage_state.json"
 PROFILE_DIR = CHECK_DIR / "pj_chrome_profile"
 
 BASE = "https://www.pagesjaunes.fr"
-WHAT = "boulangerie-patisserie"
+WHAT = "boulangerie-patisserie"      # URL slug, used by the goto/launched modes
+WHAT_HUMAN = "boulangerie patisserie"  # what a human types into the form
 PAGE_DELAY = (3.0, 6.0)      # seconds between pages, randomised
 MAX_PAGES_PER_COMMUNE = 8    # PJ paginates ~20/page; 8 covers Marseille arrondissements
 NAV_TIMEOUT = 30_000
+HUMAN_WAIT_MIN = 5.0         # minutes to wait for a hand-solved challenge
+
+# Selectors for the IN-PAGE route. Every one has fallbacks and the matching
+# one is LOGGED, because we have never seen a real PJ page: the pilot must
+# report what the DOM actually uses instead of failing silently.
+CARD_SEL = "li.bi.bi-generic, li[id^='bi-']"
+SEARCH_WHAT_SEL = ("input#quoiqui", "input[name='quoiqui']", "input#quoi",
+                   "input[placeholder*='Que']", "input[placeholder*='quoi']",
+                   "input[aria-label*='Que']")
+SEARCH_WHERE_SEL = ("input#ou", "input[name='ou']", "input[placeholder*='Où']",
+                    "input[placeholder*='ou']", "input[aria-label*='Où']")
+SUBMIT_SEL = ("button#findId", "button[type='submit']", "input[type='submit']",
+              "button:has-text('Trouver')", "button:has-text('Rechercher')")
+NEXT_SEL = ("a#pagination-next", "a[rel='next']", "a.link_pagination.next",
+            "a[aria-label*='suivante']", "a:has-text('Suivant')",
+            ".pagination a.next", "a.next")
 
 FIELDNAMES = ["listing_id", "name", "phone", "mobile", "website", "address",
               "postcode", "city", "category", "detail_url", "search_url"]
@@ -302,6 +334,130 @@ def extract_listings(page, search_url: str) -> list[dict]:
     return out
 
 
+def first_selector(page, selectors: tuple):
+    """First selector that actually matches, plus which one — the pilot must
+    tell us what the real DOM uses, not what we hoped it used."""
+    for sel in selectors:
+        try:
+            el = page.query_selector(sel)
+        except Exception:
+            continue
+        if el:
+            return el, sel
+    return None, ""
+
+
+def is_blocked(content_low: str, status: int = 0) -> bool:
+    return status in (403, 429) or any(k in content_low for k in BLOCK_MARKERS)
+
+
+def wait_for_human(page, minutes: float = HUMAN_WAIT_MIN) -> bool:
+    """A human is at the keyboard — let them clear the challenge by hand.
+
+    Sam's scraper waits 30 s for a manual solve; this is the same idea made
+    interactive and patient. Aborting the whole run on the first challenge
+    (the old --attach behaviour) throws away a session that a human could
+    rescue in ten seconds.
+    """
+    log.warning("=" * 62)
+    log.warning("CHALLENGE DETECTED — SOLVE IT IN THE CHROME WINDOW NOW.")
+    log.warning(f"Waiting up to {minutes:.0f} min; the run resumes by itself.")
+    log.warning("=" * 62)
+    deadline = time.time() + minutes * 60
+    while time.time() < deadline:
+        time.sleep(3)
+        try:
+            low = (page.content() or "").lower()
+        except Exception:
+            continue
+        if not is_blocked(low):
+            log.info("challenge cleared — resuming")
+            return True
+    log.warning("still challenged after the wait")
+    return False
+
+
+def settle(page) -> None:
+    """Wait for the result cards, tolerating PJ's slow third-party widgets."""
+    for waiter in (lambda: page.wait_for_load_state("domcontentloaded", timeout=NAV_TIMEOUT),
+                   lambda: page.wait_for_selector(CARD_SEL, timeout=15_000)):
+        try:
+            waiter()
+        except Exception:
+            pass
+
+
+def dismiss_consent(page) -> None:
+    for sel in ("#didomi-notice-agree-button",
+                "button#onetrust-accept-btn-handler",
+                "button:has-text('Tout accepter')"):
+        try:
+            el = page.query_selector(sel)
+            if el:
+                el.click(timeout=2000)
+                time.sleep(0.5)
+                return
+        except Exception:
+            pass
+
+
+def search_in_page(page, what: str, where_text: str) -> bool:
+    """Run the search through PJ's OWN form — no top-level navigation.
+
+    THE WHOLE POINT (measured 2026-08-13): a human-solved `cf_clearance` does
+    NOT survive `page.goto()`, headless or headful — Cloudflare binds it to a
+    live fingerprint. But typing in a field and clicking a button is what the
+    human who earned that clearance was already doing. Every fetch this
+    function causes is an in-page navigation or XHR from a session Cloudflare
+    already trusts, which is the one route nobody has tested.
+    """
+    dismiss_consent(page)
+    el_what, s_what = first_selector(page, SEARCH_WHAT_SEL)
+    el_where, s_where = first_selector(page, SEARCH_WHERE_SEL)
+    if not (el_what and el_where):
+        log.warning(f"search form NOT found (quoi={s_what or 'none'}, "
+                    f"ou={s_where or 'none'}) — re-run with --dump-html and fix "
+                    "SEARCH_WHAT_SEL / SEARCH_WHERE_SEL against the real DOM")
+        return False
+    log.info(f"search form: quoi={s_what} ou={s_where} -> "
+             f"{what!r} / {where_text!r}")
+    try:
+        for el, text in ((el_what, what), (el_where, where_text)):
+            el.click(timeout=5000)
+            el.fill("")
+            el.type(text, delay=60)      # typed, not pasted — humans type
+            time.sleep(0.4)
+        # PJ pops an autocomplete over the "où" field; Escape dismisses it so
+        # it cannot swallow the submit click or rewrite the location.
+        page.keyboard.press("Escape")
+        el_sub, s_sub = first_selector(page, SUBMIT_SEL)
+        if el_sub:
+            el_sub.click(timeout=5000)
+        else:
+            page.keyboard.press("Enter")
+    except Exception as exc:
+        log.warning(f"could not drive the search form: {type(exc).__name__}: {exc}")
+        return False
+    settle(page)
+    return True
+
+
+def click_next(page) -> bool:
+    """Advance by CLICKING PJ's own pagination link. Returns False at the end
+    of the result set — which is a normal stop, not a failure."""
+    el, sel = first_selector(page, NEXT_SEL)
+    if not el:
+        return False
+    try:
+        el.scroll_into_view_if_needed(timeout=3000)
+        el.click(timeout=5000)
+    except Exception as exc:
+        log.info(f"pagination click failed ({sel}): {type(exc).__name__}")
+        return False
+    settle(page)
+    return True
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Harvest Pages Jaunes for dept-13 bakeries")
     ap.add_argument("--pilot", type=int, default=0, help="only the N busiest communes")
@@ -312,7 +468,19 @@ def main() -> None:
     ap.add_argument("--dump-html", action="store_true",
                     help="save every fetched page's HTML under checkpoints/pj_html/ "
                          "(use on the pilot to verify selectors against reality)")
+    ap.add_argument("--goto", action="store_true",
+                    help="force the legacy constructed-URL route even under "
+                         "--attach (in-page navigation is the attach default)")
+    ap.add_argument("--start-url", default="",
+                    help="navigate ONCE to this URL before starting — paste the "
+                         "URL of a results page you reached by hand")
     args = ap.parse_args()
+
+    # In-page navigation is the DEFAULT for --attach, and it is the whole
+    # point of attaching: our own measurement says a human-solved clearance
+    # dies on page.goto(). Driving the site's own form and pagination links
+    # keeps every fetch inside the session Cloudflare already trusts.
+    in_page = args.attach and not args.goto
 
     try:
         from playwright.sync_api import sync_playwright
@@ -352,7 +520,8 @@ def main() -> None:
             ctx = browser.contexts[0]
             page = ctx.pages[0] if ctx.pages else ctx.new_page()
             log.info(f"attached to running Chrome at {CDP_URL} "
-                     f"({len(ctx.pages)} open tab(s))")
+                     f"({len(ctx.pages)} open tab(s)); current page: {page.url[:80]}")
+            log.info(f"navigation mode: {'IN-PAGE (form + pagination clicks)' if in_page else 'goto (constructed URLs)'}")
         else:
             PROFILE_DIR.mkdir(parents=True, exist_ok=True)
             ctx = p.chromium.launch_persistent_context(
@@ -372,6 +541,19 @@ def main() -> None:
             page = ctx.pages[0] if ctx.pages else ctx.new_page()
         page.set_default_navigation_timeout(NAV_TIMEOUT)
 
+        if args.start_url:
+            # A single deliberate navigation from the trusted session. Whether
+            # THIS survives is itself the measurement the V4 note is about.
+            log.info(f"start-url: navigating once to {args.start_url[:90]}")
+            try:
+                resp = page.goto(args.start_url, wait_until="domcontentloaded")
+                st = resp.status if resp else 0
+                low = (page.content() or "").lower()
+                log.info(f"start-url: HTTP {st}, blocked={is_blocked(low, st)}, "
+                         f"cards={len(page.query_selector_all(CARD_SEL))}")
+            except Exception as exc:
+                log.warning(f"start-url failed: {type(exc).__name__}: {exc}")
+
         def save_state(tag: str = "") -> None:
             """The persistent profile keeps cookies on disk by itself; this is a
             readable backup. Saving only at the end would throw away the one
@@ -383,114 +565,118 @@ def main() -> None:
             except Exception as exc:
                 log.warning(f"could not save session state: {type(exc).__name__}")
 
+        def handle_page(where: str, pageno: int, search_url: str) -> tuple:
+            """Read whatever is on screen NOW. Returns (rows_written, ok, stop).
+
+            `ok` = we saw a genuine results page. `stop` = abandon this commune.
+            """
+            content = (page.content() or "")
+            low = content.lower()
+            if args.dump_html:
+                dump = HTML_DIR / f"{where}_p{pageno}.html"
+                dump.write_text(content, encoding="utf-8")
+                log.info(f"HTML saved -> {dump.relative_to(CHECK_DIR)}")
+
+            if is_blocked(low):
+                if not wait_for_human(page):
+                    return 0, False, True
+                content = (page.content() or "")
+                low = content.lower()
+                if is_blocked(low):
+                    return 0, False, True
+
+            n_cards = len(page.query_selector_all(CARD_SEL))
+            clicked = reveal_phones(page)           # numbers exist only after this
+            if clicked:
+                log.info(f"{where} p{pageno}: revealed {clicked} phone number(s)")
+                if args.dump_html:
+                    # The DOM the extractor actually reads.
+                    (HTML_DIR / f"{where}_p{pageno}_revealed.html").write_text(
+                        page.content() or "", encoding="utf-8")
+            rows = extract_listings(page, search_url)
+            n = flush_rows(rows)                    # on disk before anything else
+
+            # A results page proves itself by cards or by PJ's own markup. An
+            # interstitial dressed as HTTP 200 yields 0 cards too, and marking
+            # it done would bury the rest of this commune forever.
+            real = bool(rows) or n_cards > 0 or any(k.lower() in low for k in RESULTS_MARKUP)
+            log.info(f"{where} p{pageno}: cards={n_cards} written={n}"
+                     f"{'' if real else '  (NO results markup — not marking done)'}")
+            return n, real, False
+
         for commune, cp in todo:
             if consecutive_blocks >= MAX_CONSECUTIVE_BLOCKS:
                 log.error(f"{consecutive_blocks} communes blocked in a row — stopping. "
-                          "Run once with --headful and solve the challenge by hand; "
-                          "the session is saved and the next run resumes here.")
+                          "Re-solve the challenge in Chrome and re-run; "
+                          "pj_done.txt resumes where this left off.")
                 break
             where = f"{slug(commune)}-{cp}"
+            keys = [f"{where}|p{n}" for n in range(1, MAX_PAGES_PER_COMMUNE + 1)]
+            if all(k in done for k in keys):
+                continue
             commune_ok = False
-            for pageno in range(1, MAX_PAGES_PER_COMMUNE + 1):
-                url = f"{BASE}/annuaire/chercherlespros?quoiqui={WHAT}&ou={where}&page={pageno}"
-                if url in done:
-                    continue
-                try:
-                    # domcontentloaded, not load: 'load' hangs on stuck third-party
-                    # widgets, which is how the agriculture scrape stalled.
-                    resp = page.goto(url, wait_until="domcontentloaded")
-                    status = resp.status if resp else 0
-                except Exception as exc:
-                    log.warning(f"{where} p{pageno}: {type(exc).__name__} — skipping")
-                    break
 
-                content = (page.content() or "")
-                low = content.lower()
-                if args.dump_html:
-                    dump = HTML_DIR / f"{where}_p{pageno}.html"
-                    dump.write_text(content, encoding="utf-8")
-                    log.info(f"HTML saved -> {dump.relative_to(CHECK_DIR)}")
-                if status in (403, 429) or any(k in low for k in BLOCK_MARKERS):
-                    blocked += 1
-                    log.warning(f"{where} p{pageno}: BLOCKED (status {status}).")
-                    if args.attach:
-                        # The trusted session got challenged on automated
-                        # navigation — the exact failure mode we are testing
-                        # for. Stop immediately; retrying burns the session.
-                        log.error("attached session challenged/403'd on navigation. "
-                                  "If this repeats on a fresh solve, PJ is closed "
-                                  "to the CDP route too — record it in docs and stop.")
-                        consecutive_blocks = MAX_CONSECUTIVE_BLOCKS
-                        break
-                    if args.headful:
-                        # The whole point of --headful: a human is watching.
-                        log.warning("─" * 62)
-                        log.warning("SOLVE THE CHALLENGE IN THE BROWSER WINDOW NOW.")
-                        log.warning("Waiting up to 5 minutes, then continuing automatically.")
-                        log.warning("─" * 62)
-                        for _ in range(150):        # 150 x 2s = 5 min
-                            time.sleep(2)
-                            try:
-                                low2 = (page.content() or "").lower()
-                            except Exception:
-                                continue
-                            if not any(k in low2 for k in BLOCK_MARKERS):
-                                log.info("challenge cleared — saving session and retrying")
-                                save_state("after challenge")
-                                break
-                        else:
-                            log.warning("still challenged after 5 min — moving on")
-                        # Retry this same URL once, now that cookies exist.
-                        try:
-                            resp = page.goto(url, wait_until="domcontentloaded")
-                            status = resp.status if resp else 0
-                            content = page.content() or ""
-                            low = content.lower()
-                        except Exception:
-                            break
-                        if status in (403, 429) or any(k in low for k in BLOCK_MARKERS):
-                            break
+            if in_page:
+                # ---- IN-PAGE ROUTE: drive PJ's own form, never navigate ----
+                if not search_in_page(page, WHAT_HUMAN, f"{commune.title()} {cp}"):
+                    low_now = (page.content() or "").lower()
+                    if is_blocked(low_now) and wait_for_human(page):
+                        if not search_in_page(page, WHAT_HUMAN, f"{commune.title()} {cp}"):
+                            consecutive_blocks += 1
+                            continue
                     else:
-                        break
-
-                # Consent banner, first page only in practice.
-                for sel in ("#didomi-notice-agree-button", "button#onetrust-accept-btn-handler",
-                            "text=Tout accepter"):
-                    try:
-                        el = page.query_selector(sel)
-                        if el:
-                            el.click(timeout=2000)
+                        consecutive_blocks += 1
+                        continue
+                for pageno in range(1, MAX_PAGES_PER_COMMUNE + 1):
+                    key = f"{where}|p{pageno}"
+                    if key in done:
+                        log.info(f"{where} p{pageno}: already done — paginating past it")
+                    else:
+                        n, real, stop = handle_page(where, pageno, page.url)
+                        written_total += n
+                        if stop:
+                            blocked += 1
                             break
-                    except Exception:
-                        pass
-
-                clicked = reveal_phones(page)      # numbers exist only after this
-                if clicked:
-                    log.info(f"{where} p{pageno}: revealed {clicked} phone number(s)")
-                    if args.dump_html:
-                        # Second dump AFTER the reveal — this is the DOM the
-                        # extractor actually reads.
-                        dump = HTML_DIR / f"{where}_p{pageno}_revealed.html"
-                        dump.write_text(page.content() or "", encoding="utf-8")
-                rows = extract_listings(page, url)
-                n = flush_rows(rows)          # <- on disk before anything else
-                written_total += n
-
-                # Only record a page as done when we are sure we SAW a results
-                # page. A silent interstitial yields 0 cards too, and marking it
-                # done buries pages 2-8 of this commune in pj_done.txt forever.
-                real_page = bool(rows) or any(k.lower() in low for k in RESULTS_MARKUP)
-                if real_page:
-                    mark_done(url)
-                    commune_ok = True
-                    consecutive_blocks = 0
-                else:
-                    log.warning(f"{where} p{pageno}: 0 cards and no results markup — "
-                                "NOT marking done (looks like an interstitial)")
-                log.info(f"{where} p{pageno}: written={n} (run total {written_total})")
-                if n == 0:
-                    break                      # no more result pages for this commune
-                time.sleep(random.uniform(*PAGE_DELAY))
+                        if real:
+                            mark_done(key)
+                            commune_ok = True
+                            consecutive_blocks = 0
+                    time.sleep(random.uniform(*PAGE_DELAY))
+                    if not click_next(page):
+                        break                       # end of this commune's results
+            else:
+                # ---- LEGACY ROUTE: constructed URLs (launched/headful modes) ----
+                for pageno in range(1, MAX_PAGES_PER_COMMUNE + 1):
+                    key = f"{where}|p{pageno}"
+                    if key in done:
+                        continue
+                    url = f"{BASE}/annuaire/chercherlespros?quoiqui={WHAT}&ou={where}&page={pageno}"
+                    try:
+                        # domcontentloaded, not load: 'load' hangs on stuck
+                        # third-party widgets, which stalled the agri scrape.
+                        resp = page.goto(url, wait_until="domcontentloaded")
+                        status = resp.status if resp else 0
+                    except Exception as exc:
+                        log.warning(f"{where} p{pageno}: {type(exc).__name__} — skipping")
+                        break
+                    if status in (403, 429):
+                        blocked += 1
+                        log.warning(f"{where} p{pageno}: HTTP {status}")
+                        if not wait_for_human(page):
+                            break
+                    dismiss_consent(page)
+                    n, real, stop = handle_page(where, pageno, url)
+                    written_total += n
+                    if stop:
+                        blocked += 1
+                        break
+                    if real:
+                        mark_done(key)
+                        commune_ok = True
+                        consecutive_blocks = 0
+                    if n == 0 and not real:
+                        break
+                    time.sleep(random.uniform(*PAGE_DELAY))
 
             if commune_ok:
                 save_state()                   # cheap, and never loses the challenge
