@@ -57,9 +57,12 @@ sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
 from m2lib_contact import is_surtaxe                       # noqa: E402
 from m2_s8_websites import AGGREGATORS                     # noqa: E402
 
-XLSX_PATH = PROJECT_ROOT / "exports" / "boulangerie" / "boulangerie_13_v5.xlsx"
-# Compare against V4, not V3: each version must beat the one it replaces.
-PREV_PATH = PROJECT_ROOT / "exports" / "boulangerie" / "boulangerie_13_v4.xlsx"
+EXPORT_DIR = PROJECT_ROOT / "exports" / "boulangerie"
+# Defaults gate V5 against V4; --version/--baseline retarget the SAME checks at
+# a later pair. This gate was copied wholesale three times (s4 -> s15 -> s17 ->
+# s19) and the copies drifted; parameterising stops the fourth copy existing.
+XLSX_PATH = EXPORT_DIR / "boulangerie_13_v5.xlsx"
+PREV_PATH = EXPORT_DIR / "boulangerie_13_v4.xlsx"
 VERIFIED_PATH = PROJECT_ROOT / "exports" / "boulangerie" / "checkpoints" / "verified_emails.csv"
 
 NAF_SCOPE = {"10.71C", "10.71B", "10.71D"}
@@ -133,9 +136,15 @@ def load(path: Path) -> tuple:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Quality gate for the V5 deliverable")
+    ap = argparse.ArgumentParser(description="Quality gate for a boulangerie deliverable")
     ap.add_argument("--strict", action="store_true", help="warnings also fail")
+    ap.add_argument("--version", default="v5", help="version to gate (default v5)")
+    ap.add_argument("--baseline", default="v4",
+                    help="version it must not regress against (default v4)")
     args = ap.parse_args()
+    global XLSX_PATH, PREV_PATH
+    XLSX_PATH = EXPORT_DIR / f"boulangerie_13_{args.version}.xlsx"
+    PREV_PATH = EXPORT_DIR / f"boulangerie_13_{args.baseline}.xlsx"
 
     try:
         import openpyxl  # noqa: F401
@@ -287,8 +296,8 @@ def main() -> None:
         elif n_web < p_web:
             log.info(f"        (sites {p_web} -> {n_web}: expected — junk "
                      "aggregator sites were purged deliberately)")
-        hard(not regress, "H12 no regression vs V4", "; ".join(regress))
-        log.info(f"        (V4 -> V5: rows {len(prev)}->{n}, phones {p_ph}->{n_ph}, "
+        hard(not regress, f"H12 no regression vs {args.baseline.upper()}", "; ".join(regress))
+        log.info(f"        ({args.baseline.upper()} -> {args.version.upper()}: rows {len(prev)}->{n}, phones {p_ph}->{n_ph}, "
                  f"emails {p_em}->{n_em}, sites {p_web}->{n_web})")
     else:
         warn(False, "H12 no regression vs V4", "boulangerie_13_v4.xlsx not found — "

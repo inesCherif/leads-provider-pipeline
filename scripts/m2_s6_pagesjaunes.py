@@ -133,10 +133,19 @@ AGGREGATORS = ("pagesjaunes", "pagespro", "google.", "facebook.", "instagram.",
 # walks all ~119 communes hitting the same wall on page 1, wasting an hour to
 # learn what the third commune already proved.
 MAX_CONSECUTIVE_BLOCKS = 3
-# Cloudflare (measured 2026-08-13 — NOT DataDome, the V2 notes were wrong)
-# plus the old markers. Lowercase; matched against page content.lower().
-BLOCK_MARKERS = ("datadome", "captcha", "just a moment", "cf-chl",
-                 "challenge-platform", "turnstile", "verifying you are human")
+# Block markers, NARROWED 2026-08-14 after a false positive cost a pilot run.
+# The old list contained "captcha" and "challenge-platform", and a perfectly
+# good 502 KB results page (20 cards) was thrown away because PJ's ordinary
+# stylesheet contains `.g-recaptcha iframe{height:7.8rem}` and Cloudflare
+# ships /cdn-cgi/challenge-platform/ on pages it is NOT challenging. Only
+# phrases that appear on an actual interstitial survive here — and they are
+# consulted only when the page has no result cards (see is_blocked).
+BLOCK_MARKERS = ("just a moment...", "verifying you are human",
+                 "attention required! | cloudflare", "/cdn-cgi/challenge-platform/h/b/orchestrate/chl_page",
+                 "datadome", "geo.captcha-delivery.com")
+# <script>/<style> bodies are stripped before matching: a marker inside code
+# is a false positive by construction.
+CODE_BLOCK_RE = re.compile(r"<(script|style)\b.*?</\1>", re.S | re.I)
 CDP_URL = "http://localhost:9222"
 HTML_DIR = CHECK_DIR / "pj_html"
 # Markup that proves we received a real results page. If NEITHER a listing card
@@ -156,6 +165,22 @@ def slug(s: str) -> str:
     s = unicodedata.normalize("NFD", s or "").encode("ascii", "ignore").decode()
     s = re.sub(r"[^A-Za-z0-9]+", "-", s).strip("-").lower()
     return s
+
+
+def pj_location_slug(commune: str, cp: str) -> str:
+    """PJ's own location slug, read off a live results URL 2026-08-14:
+        13001 -> marseille-1er-arrondissement-13
+        13100 -> aix-en-provence-13
+    Marseille is split by arrondissement, which is exactly the granularity
+    targets() uses, so each CP maps to one PJ page instead of one 700-listing
+    city page that will not paginate far enough.
+    """
+    c = slug(commune)
+    if c == "marseille" and cp.startswith("130") and cp[3:].isdigit():
+        n = int(cp[3:])
+        if 1 <= n <= 16:
+            return f"marseille-{'1er' if n == 1 else str(n) + 'e'}-arrondissement-13"
+    return f"{c}-13"
 
 
 def targets() -> list[tuple[str, str]]:
@@ -182,9 +207,28 @@ def mark_done(url: str) -> None:
         f.flush()
 
 
+SEEN_IDS: set = set()
+
+
+def load_seen_ids() -> None:
+    """PJ's commune pages overlap — a Marseille 1er search already returns
+    13002-13006 listings — so the same listing_id arrives from several
+    crawls. Dedupe on write instead of shipping the same shop twice."""
+    if OUT_PATH.exists():
+        with OUT_PATH.open(encoding="utf-8-sig", newline="") as fh:
+            for r in csv.DictReader(fh, delimiter=";"):
+                if r.get("listing_id"):
+                    SEEN_IDS.add(r["listing_id"])
+
+
 def flush_rows(rows: list[dict]) -> int:
     """Append + flush. A fresh handle per write, closed immediately — the file
     analogue of m1_s9j's fresh-connection-per-write fix."""
+    rows = [r for r in rows
+            if not r.get("listing_id") or r["listing_id"] not in SEEN_IDS]
+    for r in rows:
+        if r.get("listing_id"):
+            SEEN_IDS.add(r["listing_id"])
     if not rows:
         return 0
     new = not OUT_PATH.exists()
@@ -347,8 +391,27 @@ def first_selector(page, selectors: tuple):
     return None, ""
 
 
-def is_blocked(content_low: str, status: int = 0) -> bool:
-    return status in (403, 429) or any(k in content_low for k in BLOCK_MARKERS)
+def is_blocked(content: str, status: int = 0, n_cards: int = 0) -> bool:
+    """EVIDENCE OF SUCCESS OUTRANKS EVIDENCE OF FAILURE.
+
+    Learned the hard way 2026-08-14: a naive substring scan called a real
+    results page a challenge because PJ's stylesheet mentions `.g-recaptcha`.
+    Result cards on the page are proof we are through, whatever the markup
+    also happens to contain — so they are checked first and end the question.
+    """
+    if n_cards > 0:
+        return False
+    if status in (403, 429):
+        return True
+    visible = CODE_BLOCK_RE.sub(" ", content).lower()
+    return any(k in visible for k in BLOCK_MARKERS)
+
+
+def count_cards(page) -> int:
+    try:
+        return len(page.query_selector_all(CARD_SEL))
+    except Exception:
+        return 0
 
 
 def wait_for_human(page, minutes: float = HUMAN_WAIT_MIN) -> bool:
@@ -367,10 +430,10 @@ def wait_for_human(page, minutes: float = HUMAN_WAIT_MIN) -> bool:
     while time.time() < deadline:
         time.sleep(3)
         try:
-            low = (page.content() or "").lower()
+            content = page.content() or ""
         except Exception:
             continue
-        if not is_blocked(low):
+        if not is_blocked(content, n_cards=count_cards(page)):
             log.info("challenge cleared — resuming")
             return True
     log.warning("still challenged after the wait")
@@ -401,6 +464,35 @@ def dismiss_consent(page) -> None:
             pass
 
 
+def open_commune(page, commune: str, cp: str) -> bool:
+    """Open a commune's first results page by URL, inside the ATTACHED session.
+
+    MEASURED 2026-08-14, and it overturns the V4 note: `page.goto()` returns
+    HTTP 200 with 20 cards when we are attached to the human's own Chrome.
+    The V4 failure ("clearance does not survive automated navigation") was a
+    property of a LAUNCHED browser, not of navigation itself.
+
+    Driving PJ's search FORM was tried first and abandoned: typing into
+    `input#ou` does not update PJ's resolved location (it keeps an internal
+    slug + idOu), so every "search" silently re-ran Marseille. The URL is the
+    honest way to say which commune we want.
+    """
+    url = f"{BASE}/annuaire/{pj_location_slug(commune, cp)}/boulangerie"
+    try:
+        resp = page.goto(url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
+        status = resp.status if resp else 0
+    except Exception as exc:
+        log.warning(f"{commune} {cp}: navigation failed {type(exc).__name__}")
+        return False
+    settle(page)
+    n = count_cards(page)
+    log.info(f"{commune} {cp}: HTTP {status}, cards={n}, url={page.url[:78]}")
+    if n == 0 and status == 404:
+        log.warning(f"{commune} {cp}: 404 — PJ slug is probably wrong "
+                    f"({pj_location_slug(commune, cp)})")
+    return True
+
+
 def search_in_page(page, what: str, where_text: str) -> bool:
     """Run the search through PJ's OWN form — no top-level navigation.
 
@@ -419,6 +511,7 @@ def search_in_page(page, what: str, where_text: str) -> bool:
                     f"ou={s_where or 'none'}) — re-run with --dump-html and fix "
                     "SEARCH_WHAT_SEL / SEARCH_WHERE_SEL against the real DOM")
         return False
+    url_before = page.url
     log.info(f"search form: quoi={s_what} ou={s_where} -> "
              f"{what!r} / {where_text!r}")
     try:
@@ -426,19 +519,30 @@ def search_in_page(page, what: str, where_text: str) -> bool:
             el.click(timeout=5000)
             el.fill("")
             el.type(text, delay=60)      # typed, not pasted — humans type
-            time.sleep(0.4)
-        # PJ pops an autocomplete over the "où" field; Escape dismisses it so
-        # it cannot swallow the submit click or rewrite the location.
-        page.keyboard.press("Escape")
-        el_sub, s_sub = first_selector(page, SUBMIT_SEL)
-        if el_sub:
-            el_sub.click(timeout=5000)
-        else:
-            page.keyboard.press("Enter")
+            time.sleep(0.8)              # let the autocomplete settle
+        # PJ resolves the location through its own autocomplete
+        # ("13001" -> "Marseille 1er arrondissement"). Taking the first
+        # suggestion is what a human does and what makes the location a real
+        # PJ place rather than a free-text string it may silently ignore.
+        page.keyboard.press("ArrowDown")
+        time.sleep(0.3)
+        page.keyboard.press("Enter")
+        settle(page)
+        if page.url == url_before:
+            # Enter only accepted the suggestion; submit explicitly.
+            el_sub, s_sub = first_selector(page, SUBMIT_SEL)
+            if el_sub:
+                log.info(f"submitting via {s_sub}")
+                el_sub.click(timeout=5000)
+                settle(page)
     except Exception as exc:
         log.warning(f"could not drive the search form: {type(exc).__name__}: {exc}")
         return False
-    settle(page)
+    if page.url == url_before:
+        log.warning("the URL did not change — the search may not have fired; "
+                    "extracting whatever is on screen anyway")
+    else:
+        log.info(f"search landed on {page.url[:100]}")
     return True
 
 
@@ -488,6 +592,7 @@ def main() -> None:
         sys.exit("playwright required:\n  pip install playwright\n  playwright install chromium")
 
     CHECK_DIR.mkdir(parents=True, exist_ok=True)
+    load_seen_ids()
     todo = targets()
     if args.pilot:
         todo = todo[:args.pilot]
@@ -548,9 +653,9 @@ def main() -> None:
             try:
                 resp = page.goto(args.start_url, wait_until="domcontentloaded")
                 st = resp.status if resp else 0
-                low = (page.content() or "").lower()
-                log.info(f"start-url: HTTP {st}, blocked={is_blocked(low, st)}, "
-                         f"cards={len(page.query_selector_all(CARD_SEL))}")
+                nc = count_cards(page)
+                log.info(f"start-url: HTTP {st}, cards={nc}, "
+                         f"blocked={is_blocked(page.content() or '', st, nc)}")
             except Exception as exc:
                 log.warning(f"start-url failed: {type(exc).__name__}: {exc}")
 
@@ -577,15 +682,15 @@ def main() -> None:
                 dump.write_text(content, encoding="utf-8")
                 log.info(f"HTML saved -> {dump.relative_to(CHECK_DIR)}")
 
-            if is_blocked(low):
+            n_cards = count_cards(page)
+            if is_blocked(content, n_cards=n_cards):
                 if not wait_for_human(page):
                     return 0, False, True
                 content = (page.content() or "")
                 low = content.lower()
-                if is_blocked(low):
+                n_cards = count_cards(page)
+                if is_blocked(content, n_cards=n_cards):
                     return 0, False, True
-
-            n_cards = len(page.query_selector_all(CARD_SEL))
             clicked = reveal_phones(page)           # numbers exist only after this
             if clicked:
                 log.info(f"{where} p{pageno}: revealed {clicked} phone number(s)")
@@ -618,10 +723,9 @@ def main() -> None:
 
             if in_page:
                 # ---- IN-PAGE ROUTE: drive PJ's own form, never navigate ----
-                if not search_in_page(page, WHAT_HUMAN, f"{commune.title()} {cp}"):
-                    low_now = (page.content() or "").lower()
-                    if is_blocked(low_now) and wait_for_human(page):
-                        if not search_in_page(page, WHAT_HUMAN, f"{commune.title()} {cp}"):
+                if not open_commune(page, commune, cp):
+                    if is_blocked(page.content() or "", n_cards=count_cards(page))                             and wait_for_human(page):
+                        if not open_commune(page, commune, cp):
                             consecutive_blocks += 1
                             continue
                     else:
