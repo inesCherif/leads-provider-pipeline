@@ -21,7 +21,7 @@ All measurements from this machine (residential IP, Marseille-area ISP).
 
 | Source | What blocks it | Detail |
 |---|---|---|
-| **Pages Jaunes** | **CLOUDFLARE** (403 + challenge on every URL incl. homepage) | ⚠ Earlier docs said DataDome — **wrong since at least today**. Bundled Chromium: challenge loops forever (automation detected). Real Chrome + stripped automation flags: challenge is solvable and Ines solved one — `cf_clearance` was issued — **but the clearance does not survive automated navigation**, headless or headful. Cloudflare binds it to a live fingerprint, not a portable cookie. Last free idea: CDP-attach to a human-launched Chrome (V5 plan step 2). If that fails, PJ is definitively dead for free. Its data leaks out via search snippets anyway |
+| **Pages Jaunes** | ✅ **OPEN via CDP attach** — 816 listings, 100% with a phone (2026-08-14) | It is Cloudflare, not DataDome. A **launched** browser is detected and its human-solved `cf_clearance` dies on navigation — that part of the V4 note holds. But **attached over CDP to the human's own Chrome, plain `goto()` returns HTTP 200 with 20 cards**: Cloudflare binds clearance to the browser, not to the act of navigating. Setup + the one false-positive that hid this for a day: see the V6 entry in `m2_progress.md` |
 | Brave Search (scraped) | CAPTCHA after ~85 queries | Brave's official API exists but needs a credit card → excluded |
 | Bing (2026-08 recipe) | serves results for the wrong query | recipe stale |
 | DuckDuckGo lite / Mojeek | 403 | the `ddgs` lib works where raw scraping doesn't |
