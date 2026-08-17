@@ -226,29 +226,51 @@ VERDICT_JUNK = {"reseau", "annuaire", "hors_sujet", "parked", "mort"}
 
 
 def classify(*, reached: bool, text: str, own: str, shared: bool,
-             communes: frozenset = frozenset(), has_shop_page: bool = False) -> tuple:
+             communes: frozenset = frozenset(), has_shop_page: bool = False,
+             blocked: bool = False) -> tuple:
     """(verdict, reason) for one (SIRET, domain) pair. See the taxonomy in
     docs/m2_progress.md; `valide`/`non_verifiable` ship, everything else is
-    deleted from the deliverable."""
+    deleted from the deliverable.
+
+    ORDER IS THE WHOLE DESIGN, and the first pilot proved it twice:
+
+      * `has_shop_page` is tested BEFORE the directory test. A real chain's
+        own site lists its shops, so breadth flags it — and the first pilot
+        found 17 genuine shop pages and then discarded every one of them.
+        Evidence of success outranks evidence of failure; this is the same
+        correction V6 had to make when `is_blocked()` announced a CAPTCHA on
+        a page that was already holding 20 result cards.
+      * the directory test is tested BEFORE ownership, because a directory
+        PRINTS our SIRET (restopropre.fr, data-prospection.fr both did).
+      * ownership is tested BEFORE `shared`. "Shared" means WE attached one
+        domain to several companies — our mistake, not the site's — so the
+        row whose SIREN the page actually prints keeps it (labolapepite.com
+        was deleted as `reseau` in the first pilot despite proving its owner).
+    """
     if not reached:
-        return "mort", "unreachable"
+        # A server that answered 403/503 is alive and refusing US. Recording
+        # our own failure as a fact about the data is the agriculture
+        # DNS-timeout bug, which cost 10,478 good addresses. Flag, never drop.
+        return ("non_verifiable", "blocked") if blocked else ("mort", "unreachable")
     if is_parked(text):
         return "parked", "parking_page"
-    is_dir, why = is_directory_like(text, communes)
-    if is_dir:
-        return "annuaire", why
-    if len(text) < MIN_TEXT_CHARS:
-        return "non_verifiable", f"text:{len(text)}"
 
     bakery = bakery_score(text)
     if has_shop_page:
         return "valide", f"shop_page+{own}"
+    is_dir, why = is_directory_like(text, communes)
+    if is_dir:
+        # Covers directories AND chain locator pages: both are pages about
+        # many businesses, neither is THIS shop's own page.
+        return "annuaire", why
+    if own in ("siret", "siren", "tel"):
+        return "valide", f"own:{own}"
+    if len(text) < MIN_TEXT_CHARS:
+        return "non_verifiable", f"text:{len(text)}"
     if shared:
         # Chain/network domain and no page of its own for this shop. The
         # network's mailbox and switchboard are not this bakery's.
         return "reseau", f"shared_domain+{own}"
-    if own in ("siret", "siren", "tel"):
-        return "valide", f"own:{own}"
     if own == "cp+nom":
         return ("valide", "own:cp+nom") if bakery >= 1 else \
                ("hors_sujet", f"cp+nom_no_bakery:{bakery}")
@@ -376,6 +398,27 @@ def selftest() -> int:
     check("shared chain domain WITH shop page -> valide",
           classify(reached=True, text=real_txt, own="cp+nom", shared=True,
                    communes=C13, has_shop_page=True)[0], "valide")
+    # Pilot 1 regressions — both of these were judged WRONG before the reorder.
+    # A chain's own site lists its shops, so breadth flags the home page; the
+    # shop page we already found must still win (17 were discarded this way).
+    check("chain locator home + shop page found -> valide",
+          classify(reached=True, text=annuaire, own="cp+nom", shared=True,
+                   communes=C13, has_shop_page=True)[0], "valide")
+    # labolapepite.com: the page prints OUR siren, but the domain was attached
+    # to several of our rows. Sharedness is our mistake, not the site's.
+    check("shared domain but the page proves OUR siren -> valide",
+          classify(reached=True, text=real_txt, own="siren", shared=True,
+                   communes=C13)[0], "valide")
+    check("...while its co-tenants on that domain still get reseau",
+          classify(reached=True, text=real_txt, own="none", shared=True,
+                   communes=C13)[0], "reseau")
+    # rubypayeur.com answered 403: alive, refusing us. Our failure is not
+    # evidence about the data (agriculture lost 10,478 addresses to that).
+    check("blocked (403) -> non_verifiable, NOT mort",
+          classify(reached=False, text="", own="none", shared=False,
+                   blocked=True)[0], "non_verifiable")
+    check("connection dead -> mort",
+          classify(reached=False, text="", own="none", shared=False)[0], "mort")
     # The CHAMADE/COULIN case: a real bakery site, just not ours.
     check("competitor's bakery site -> hors_sujet",
           classify(reached=True, text=real_txt, own="none", shared=False,
