@@ -264,6 +264,9 @@ def main() -> None:
     ap.add_argument("--deep", action="store_true",
                     help="re-visit domains that yielded nothing, following "
                          "sitemap.xml and the site's own contact links")
+    ap.add_argument("--only-valid", action="store_true",
+                    help="skip domains m2_s21 judged junk — deep-crawling 10 "
+                         "pages of a directory cannot yield this shop's e-mail")
     args = ap.parse_args()
 
     try:
@@ -292,6 +295,21 @@ def main() -> None:
         todo = [d for d in by_domain if d not in done]
         log.info(f"{len(by_domain)} distinct domains, {len(done)} already crawled, "
                  f"{len(todo)} to do")
+    if args.only_valid:
+        # A domain is worth crawling if ANY of our rows may legitimately keep
+        # it. Judged-junk-for-everyone domains are skipped: Sam asked us to
+        # mine the sites that are OK, and 10 pages of restopropre.fr can only
+        # yield somebody else's mailbox.
+        vrows = read_rows(CHECK_DIR / "site_verdicts.csv")
+        if not vrows:
+            sys.exit("--only-valid needs site_verdicts.csv — run "
+                     "scripts/m2_s21_validate_sites.py first.")
+        keep = {r["domain"] for r in vrows
+                if r["verdict"] in ("valide", "non_verifiable")}
+        before = len(todo)
+        todo = [d for d in todo if d in keep]
+        log.info(f"--only-valid: {before} -> {len(todo)} domains "
+                 f"({len(keep)} distinct domains survived validation)")
     if args.limit:
         todo = todo[:args.limit]
 
