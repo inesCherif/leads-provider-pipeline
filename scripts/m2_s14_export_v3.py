@@ -82,7 +82,8 @@ from scripts.m1_s8_export import ILLEGAL_XML            # noqa: E402
 from m2lib_contact import (normalize_fr_phone, is_surtaxe,  # noqa: E402
                            is_third_party_email)
 from m2_s8_websites import AGGREGATORS                  # noqa: E402
-from m2lib_validate import VERDICT_SHIPS, site_confiance  # noqa: E402
+from m2lib_validate import (VERDICT_SHIPS, email_belongs_to,  # noqa: E402
+                            site_confiance)
 
 
 def host(url: str) -> str:
@@ -309,7 +310,7 @@ def main() -> None:
                         "pattern/verifie", "pattern"))
         srcs[s].add("pattern")
 
-    n_third_party = n_junk_site_email = 0
+    n_third_party = n_junk_site_email = n_named_recovered = 0
     for r in site_emails:
         s, e = r["siret"], r["email"].lower()
         # Defence in depth: m2_s9 drops these at extraction, but checkpoints
@@ -324,14 +325,33 @@ def main() -> None:
         # different routes: the page it came FROM, and the domain it lives ON
         # (contact@autour-de-moi.pro fails the second even if the first is
         # somehow clean).
-        if not site_ok(s, "https://" + r.get("domain", "")) \
-                or e.partition("@")[2] in junk_domains:
+        # The address's own domain being junk is fatal, always — that is
+        # contact@autour-de-moi.pro, the aggregator's own mailbox.
+        if e.partition("@")[2] in junk_domains:
             n_junk_site_email += 1
             continue
+        if not site_ok(s, "https://" + r.get("domain", "")):
+            # The PAGE failed validation. That condemns the site, and it
+            # condemns an anonymous `contact@` found there — but not an
+            # address that names this very business. V7 deleted 264
+            # businesses' only e-mail on this rule, including
+            # lapatisseriedesmarseillais@gmail.com found on
+            # lapatisseriedesmarseillais.fr. The attribution of the PAGE was
+            # wrong; the address was not. See email_belongs_to().
+            if not email_belongs_to(e, r.get("raison_sociale", ""),
+                                    r.get("enseigne", "")):
+                n_junk_site_email += 1
+                continue
+            conf_named = True
+        else:
+            conf_named = False
         v = verified.get(e, "non verifie")
-        conf = r.get("confiance") or "faible"
+        # An address recovered by its name never claims `confirme`: what we
+        # proved is whose NAME it carries, not that the page was theirs.
+        conf = "faible" if conf_named else (r.get("confiance") or "faible")
         cand[s].append((RANK.get((conf, v), 9), e, v, conf, "site"))
         srcs[s].add("site")
+        n_named_recovered += 1 if conf_named else 0
         # Sam asked for "les urls des pages contact". m2_s21 records the one it
         # reached at /contact, but plenty of small sites (the eatbu template in
         # his own example) put their details at a #contact anchor on the home
@@ -547,6 +567,8 @@ def main() -> None:
         log.info(f"    shop-specific pages shipped instead of a chain home: {n_shop}")
         log.info(f"    e-mails dropped (harvested from an unvalidated site): "
                  f"{n_junk_site_email} + {n_junk_mail} on a junk domain by another route")
+        log.info(f"    e-mails KEPT because the address names the business "
+                 f"(shipped `faible`): {n_named_recovered}")
         log.info(f"    phones dropped (same reason): {n_junk_site_phone}")
         log.info(f"  with a contact page URL   "
                  f"{sum(1 for r in rows if r['page_contact']):>6}")

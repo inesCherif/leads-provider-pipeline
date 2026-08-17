@@ -235,6 +235,35 @@ def ownership(text: str, *, sirets=(), sirens=(), cps=(), tokens=(), phones=(),
     return "none"
 
 
+def email_belongs_to(email: str, *names) -> bool:
+    """Does this address carry the business's OWN name?
+
+    V7 deleted every address harvested from a page that failed validation,
+    and that overshot: 264 businesses lost their only e-mail, among them
+    `lapatisseriedesmarseillais@gmail.com` — taken from
+    `lapatisseriedesmarseillais.fr`, a domain judged `reseau` only because
+    two of our SIREN share it. The page attribution was wrong; the ADDRESS
+    plainly was not.
+
+    The separating question is not "was the page this shop's page" but "does
+    the address name this shop". A directory page listing many bakeries can
+    still print ours correctly, and the name in the local part or the mailbox
+    domain is what proves which row it belongs to. Generic trade words are
+    excluded for the same reason as in domain_matches_name(): `contact@` and
+    `boulangerie@` identify a trade, never a company.
+    """
+    local, _, dom = (email or "").lower().partition("@")
+    if not dom:
+        return False
+    l = re.sub(r"[^a-z0-9]", "", local)
+    d = re.sub(r"[^a-z0-9]", "", dom.split(".")[0])
+    tokens = set()
+    for n in names:
+        tokens |= {t.lower() for t in norm(n).split()
+                   if len(t) > 3 and t not in GENERIC_NAME_WORDS}
+    return any(t in l or t in d for t in tokens)
+
+
 # ------------------------------------------------- chain shop pages ----
 
 def slugify(s: str) -> str:
@@ -445,6 +474,24 @@ def selftest() -> int:
     # Coverage is what stops it: one short token inside a long unrelated domain.
     check("a name token buried in an unrelated long domain fails coverage",
           domain_matches_name("grandsmoulinsdeprovencesudest.com", "SARL VAGUE"), False)
+
+    print("email_belongs_to (recovers what V7's site purge over-deleted):")
+    check("name in the local part",
+          email_belongs_to("lapatisseriedesmarseillais@gmail.com",
+                           "LA PATISSERIE DES MARSEILLAIS"), True)
+    check("name in the mailbox domain",
+          email_belongs_to("contact@maisonbergese.com", "MAISON BERGESE"), True)
+    check("enseigne rather than raison sociale",
+          email_belongs_to("hello@ohfaon.com", "SARL JLC", "OH FAON !"), True)
+    # The guards: an address that names nobody, or names a TRADE, stays out.
+    check("bare contact@ on a network domain proves nothing",
+          email_belongs_to("contact@franceboulangerie.fr", "JEAN PETIT"), False)
+    check("a supplier's address does not become ours",
+          email_belongs_to("contact@pavailler.com", "BOULANGERIE MARIUS"), False)
+    check("generic trade word is not an identity",
+          email_belongs_to("boulangerie@gmail.com", "SARL BOULANGERIE"), False)
+    check("another shop's address on a directory page",
+          email_belongs_to("boutiquesaintmax@gmail.com", "LE FOURNIL DE PAUL"), False)
 
     print("shop_page_candidates (Sam's lamiedepain case):")
     urls = ["https://lamiedepain-boulangerie.fr",

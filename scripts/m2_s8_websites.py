@@ -60,6 +60,9 @@ OURS_PATH = CHECK_DIR / "etablissements.csv"
 MATCHED_PATH = CHECK_DIR / "matched.csv"
 OUT_PATH  = CHECK_DIR / "discovered_sites.csv"
 DONE_PATH = CHECK_DIR / "sites_done.txt"
+# Separate ledger for --redo-siteless, so a second pass over the same
+# businesses stays resumable without erasing the first pass's history.
+REDO_DONE_PATH = CHECK_DIR / "sites_done_redo.txt"
 
 # Directories, registry mirrors, delivery apps and social networks. None of
 # them is the bakery's own site, and every one of them would pass a naive
@@ -162,6 +165,11 @@ def main() -> None:
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--backend", default="tavily",
                     choices=["tavily", "ddgs", "serper_web"])
+    ap.add_argument("--redo-siteless", action="store_true",
+                    help="re-search businesses that have NO VALIDATED site, "
+                         "ignoring sites_done.txt. V7 deleted 833 wrong sites; "
+                         "those businesses were 'done' only in the sense that a "
+                         "previous backend answered wrongly.")
     args = ap.parse_args()
 
     if not OURS_PATH.exists():
@@ -175,6 +183,20 @@ def main() -> None:
         with MATCHED_PATH.open(encoding="utf-8-sig", newline="") as fh:
             known = {r["siret"] for r in csv.DictReader(fh, delimiter=";") if r["website"]}
     done = load_done()
+    if args.redo_siteless:
+        # "Already searched" is not "already has a site". A previous backend
+        # answered for these, and m2_s21 then proved the answer wrong — that is
+        # the population worth spending a fresh quota on, and it is the biggest
+        # gap in V7 (1,524 rows with no site at all).
+        verdicts = CHECK_DIR / "site_verdicts.csv"
+        if verdicts.exists():
+            with verdicts.open(encoding="utf-8-sig", newline="") as fh:
+                known = {r["siret"] for r in csv.DictReader(fh, delimiter=";")
+                         if r["verdict"] in ("valide", "non_verifiable")}
+        done = set(REDO_DONE_PATH.read_text(encoding="utf-8").split()) \
+            if REDO_DONE_PATH.exists() else set()
+        log.info(f"--redo-siteless: {len(known)} businesses hold a VALIDATED "
+                 f"site; everyone else is a target again")
     todo = [r for r in ours if r["siret"] not in known and r["siret"] not in done]
 
     # Biggest first. "Don't scrape the whole base" is a standing rule here, and
