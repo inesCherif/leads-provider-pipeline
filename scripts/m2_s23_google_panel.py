@@ -79,6 +79,7 @@ FIELDNAMES = ["listing_id", "name", "phone", "website", "address",
 
 DELAY = 2.5          # a human pace; we are a guest in Ines's own session
 TIMEOUT = 25_000
+PANEL_WAIT = 1_500   # the panel paints after domcontentloaded (measured)
 
 # Google's panel labels the number. Accept a number only inside this window,
 # the extract_phones_ctx contract applied to a page we cannot select by class.
@@ -87,9 +88,21 @@ PHONE_NEAR_RE = re.compile(
     r"(?<![\d/])(?:\+33|0033|0)[\s.\-]?[1-9](?:[\s.\-]?\d{2}){4}(?!\d)")
 CTX_WINDOW = 60
 
-# The panel prints the postal address on its own line.
-ADDR_RE = re.compile(r"Adresse\s*:?\s*([^\n]{6,120})")
+# The panel is addressable by Google's own semantic keys (measured live,
+# 2026-08-17): the phone sits under `kc:/local:alt phone`, the address under
+# `kc:/location/location:address`, and both live inside `#rhs`.
+PANEL_PROOF = ("[data-attrid^='kc:/local'], "
+               "[data-attrid='kc:/location/location:address']")
+PHONE_ATTRID = "[data-attrid='kc:/local:alt phone']"
+ADDR_ATTRID = "[data-attrid='kc:/location/location:address']"
+ADDR_LABEL_RE = re.compile(r"^\s*adresse\s*:?\s*", re.I)
 CP_RE = re.compile(r"\b(\d{5})\b")
+
+# Markers of a company-directory snippet. If these survive into what we think
+# is the panel address, we are reading the wrong part of the page.
+SNIPPET_JUNK_RE = re.compile(
+    r"SIRET|Clef NIC|Dossier d'urbanisme|Forme juridique|adresse postale",
+    re.I)
 
 # Google's own hosts are never a merchant's website.
 GOOGLE_OWN = ("google.", "gstatic.", "googleusercontent.", "youtube.",
@@ -156,41 +169,102 @@ def panel_blocked(text: str, status: int) -> bool:
     return status in (403, 429) or any(m in (text or "").lower() for m in BLOCK_MARKERS)
 
 
-def extract_phone(page, text: str) -> str:
-    """A number Google ANNOUNCES as this business's phone, or ""."""
-    for el in page.query_selector_all('a[href^="tel:"]'):
+def panel_root(page):
+    """The Business panel element, or None when Google showed no panel.
+
+    MEASURED 2026-08-17, and the whole reason this file was rewritten: a
+    desktop SERP carries ZERO `tel:` links, and the words `Téléphone` and
+    `Adresse` appear in the ORGANIC SNIPPETS of company directories
+    (societe.com prints `Adresse ... SIRET ... Clef NIC`). Reading the body
+    text therefore harvested directory snippets and labelled them `panel`.
+    The panel is addressable semantically: Google tags it with `data-attrid`
+    keys under `kc:/local:*`, inside `#rhs` / `.kp-wholepage`. No panel is an
+    honest no-result — never fall back to the page body.
+    """
+    for sel in ("#rhs", ".kp-wholepage"):
+        el = page.query_selector(sel)
+        if el and el.query_selector(PANEL_PROOF):
+            return el
+    return None
+
+
+def extract_phone(panel) -> str:
+    """A number the PANEL announces, or ""."""
+    el = panel.query_selector('a[href^="tel:"]')
+    if el:
         p = normalize_fr_phone((el.get_attribute("href") or "")[4:])
         if p and plausible_fr_number(p):
             return p
-    for m in PHONE_LABEL_RE.finditer(text or ""):
-        window = text[m.end():m.end() + CTX_WINDOW]
-        for c in PHONE_NEAR_RE.finditer(window):
+    for sel in (PHONE_ATTRID, "[data-attrid*='phone']"):
+        for node in panel.query_selector_all(sel):
+            for c in PHONE_NEAR_RE.finditer(node.inner_text() or ""):
+                p = normalize_fr_phone(c.group(0))
+                if p and plausible_fr_number(p):
+                    return p
+    # Last resort, still INSIDE the panel: its own labelled line.
+    text = panel.inner_text() or ""
+    for m in PHONE_LABEL_RE.finditer(text):
+        for c in PHONE_NEAR_RE.finditer(text[m.end():m.end() + CTX_WINDOW]):
             p = normalize_fr_phone(c.group(0))
             if p and plausible_fr_number(p):
                 return p
     return ""
 
 
-def extract_site(page) -> str:
-    """The merchant's own site, only ever from a real outbound link."""
-    for el in page.query_selector_all('a[href^="http"]'):
+def extract_site(panel) -> str:
+    """The merchant's own site, from the panel's own Site Web button.
+
+    Never "the first outbound link on the page" — that returned the first
+    organic result (banette.fr, boulangerie-ange.fr) as the shop's site,
+    the V7 defect that shipped mapquest.com and a dictionary as bakeries'
+    websites.
+    """
+    for el in panel.query_selector_all('a[href^="http"]'):
         href = el.get_attribute("href") or ""
+        label = ((el.get_attribute("aria-label") or "") + " " +
+                 (el.inner_text() or "")).lower()
+        if "site web" not in label and "site internet" not in label:
+            continue
         if "/url?" in href:                      # Google's redirect wrapper
             q = urllib.parse.parse_qs(urllib.parse.urlparse(href).query)
             for key in ("q", "url"):
                 if q.get(key) and usable_site(q[key][0]):
                     return urllib.parse.unquote(q[key][0])
             continue
-        label = ((el.get_attribute("aria-label") or "") + " " +
-                 (el.inner_text() or "")).lower()
-        if ("site web" in label or "site internet" in label) and usable_site(href):
+        if usable_site(href):
             return href
     return ""
 
 
-def extract_address(text: str) -> str:
-    m = ADDR_RE.search(text or "")
-    return m.group(1).strip() if m else ""
+def extract_address(panel) -> str:
+    for sel in (ADDR_ATTRID, "[data-attrid*='address']"):
+        node = panel.query_selector(sel)
+        if node:
+            txt = " ".join((node.inner_text() or "").split())
+            txt = ADDR_LABEL_RE.sub("", txt).strip(" :,")
+            if txt and not SNIPPET_JUNK_RE.search(txt):
+                return txt[:120]
+    return ""
+
+
+def extract_name(panel) -> str:
+    """The panel's own heading — independent of our registry name, which is
+    what makes it usable evidence in m2_s7's name test."""
+    node = panel.query_selector("[data-attrid='title']") or panel.query_selector("h2")
+    return " ".join((node.inner_text() or "").split())[:120] if node else ""
+
+
+def panel_postcode(addr: str) -> str:
+    """A real French postcode from the panel address, or "".
+
+    `sorted(CP_RE.findall(addr))[0]` used to win, which on a directory
+    snippet picked the SIRET's 5-digit NIC clef (`00028`) as the postcode
+    and would have poisoned m2_s7's postcode pool.
+    """
+    for cp in CP_RE.findall(addr or ""):
+        if not cp.startswith("00"):
+            return cp
+    return ""
 
 
 def main() -> None:
@@ -211,7 +285,7 @@ def main() -> None:
     log.info(f"{len(todo)} target(s) without a trusted phone"
              + ("  [PILOT]" if args.pilot else ""))
 
-    found_ph = found_site = blocked = geo_reject = 0
+    found_ph = found_site = blocked = geo_reject = no_panel = 0
     consecutive_blocks = 0
     with sync_playwright() as p:
         try:
@@ -229,14 +303,22 @@ def main() -> None:
             q = f"boulangerie {r['adresse']} {r['code_postal']} {r['commune']}"
             url = ("https://www.google.com/search?hl=fr&q="
                    + urllib.parse.quote_plus(q))
-            phone = site = addr = ""
+            phone = site = addr = name = cp = ""
             try:
                 resp = page.goto(url, timeout=TIMEOUT, wait_until="domcontentloaded")
                 status = resp.status if resp else 0
-                text = page.inner_text("body") or ""
-                phone = extract_phone(page, text)
+                # The panel renders after first paint; without this wait the
+                # panel is simply absent and every row looks like a miss.
+                page.wait_for_timeout(PANEL_WAIT)
+                panel = panel_root(page)
+                if panel is not None:
+                    phone = extract_phone(panel)
+                    site = extract_site(panel)
+                    addr = extract_address(panel)
+                    name = extract_name(panel)
+                    cp = panel_postcode(addr)
                 # Evidence of success outranks evidence of failure.
-                if not phone and panel_blocked(text, status):
+                if not phone and panel_blocked(page.inner_text("body") or "", status):
                     blocked += 1
                     consecutive_blocks += 1
                     log.warning(f"[{i}/{len(todo)}] BLOCKED status={status}")
@@ -247,31 +329,34 @@ def main() -> None:
                     time.sleep(DELAY * 10)
                     continue
                 consecutive_blocks = 0
-                site = extract_site(page)
-                addr = extract_address(text)
+                if panel is None:
+                    no_panel += 1
             except Exception as exc:
                 log.warning(f"[{i}/{len(todo)}] error {type(exc).__name__}")
 
             # THE GEO GATE, on what the panel PRINTS. The query already
             # contains our postcode, so finding it in the query proves
             # nothing; finding it in the panel's own address line is the
-            # panel agreeing with us. Without an address we keep the row
-            # anyway and let m2_s7 judge it on the name — but we never
-            # invent the address from the query.
-            cps = set(CP_RE.findall(addr))
-            if addr and cps and r["code_postal"] not in cps:
-                geo_reject += 1
-                phone = site = ""
+            # panel agreeing with us. Without a readable postcode we have no
+            # location evidence at all, so the row is dropped rather than
+            # shipped on the query's say-so.
+            if phone or site:
+                if not cp:
+                    geo_reject += 1
+                    phone = site = ""
+                elif cp != r["code_postal"]:
+                    geo_reject += 1
+                    phone = site = ""
 
             if phone or site:
                 row = {
                     "listing_id": f"gp_{r['siret']}",
-                    # The panel's own heading, when it gave one; never our
-                    # registry name, which would make m2_s7's name test
-                    # compare our row against itself.
-                    "name": (addr.split(",")[0] if addr else ""),
+                    # The panel's own heading; never our registry name, which
+                    # would make m2_s7's name test compare our row against
+                    # itself.
+                    "name": name,
                     "phone": phone, "website": site, "address": addr,
-                    "postcode": (sorted(cps)[0] if cps else r["code_postal"]),
+                    "postcode": cp,
                     "city": r["commune"], "query": q,
                 }
                 new = not OUT_PATH.exists()
@@ -295,7 +380,8 @@ def main() -> None:
 
     log.info("─" * 62)
     log.info(f"phones: {found_ph}/{len(todo)} | websites: {found_site} | "
-             f"blocked: {blocked} | geo-rejected: {geo_reject}")
+             f"blocked: {blocked} | geo-rejected: {geo_reject} | "
+             f"no panel: {no_panel}")
     if args.pilot:
         rate = found_ph / len(todo) if todo else 0
         log.info(f"PILOT hit-rate {rate:.0%} — the project's go/no-go is 30%. "
