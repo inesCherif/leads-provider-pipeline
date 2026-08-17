@@ -158,10 +158,57 @@ def is_directory_like(text: str, communes: frozenset = frozenset()) -> tuple:
 
 # ---------------------------------------------------------- ownership ----
 
-OWNERSHIP_RANK = {"siret": 4, "siren": 3, "tel": 3, "cp+nom": 2, "cp": 1, "none": 0}
+OWNERSHIP_RANK = {"siret": 4, "siren": 3, "tel": 3, "cp+nom": 2, "nom_domaine": 2,
+                  "cp": 1, "none": 0}
+
+# Words that say "bakery", not "which bakery". A domain matching only these
+# identifies nothing: `lamiedepain-boulangerie.fr` contains PAIN, and letting
+# that count would hand the chain's site to LA MIE DU PAIN in Vitrolles — one
+# of the five wrong attributions Sam reported.
+GENERIC_NAME_WORDS = frozenset({
+    "PAIN", "PAINS", "BOULANGERIE", "BOULANGER", "PATISSERIE", "PATISSIER",
+    "FOURNIL", "MAISON", "ATELIER", "MOULIN", "FOUR", "TRADITION", "DELICE",
+    "DELICES", "GOURMAND", "GOURMANDE", "BOUTIQUE", "ARTISAN", "PETRIN",
+    "MARSEILLE", "AIX", "PROVENCE", "SARL", "EURL", "SAS", "SASU", "SNC",
+})
+MIN_DOMAIN_COVERAGE = 0.6
 
 
-def ownership(text: str, *, sirets=(), sirens=(), cps=(), tokens=(), phones=()) -> str:
+def domain_matches_name(domain: str, *names) -> bool:
+    """Is the domain named after THIS business?
+
+    `ohfaon.com` for OH FAON! and `alyncake.fr` for ALYN CAKE are that
+    business's site, and nothing on those pages says so in a form the
+    identity ladder can read — no SIRET, no postcode, no phone we already
+    hold. The domain itself is the evidence.
+
+    Two guards, because this is exactly the shape of agriculture's worst bug
+    (`EARL DU VIEUX CHENE` -> vieuxchene.fr, a real site owned by a stranger):
+
+      * generic trade words never count, so `-boulangerie.fr` matches nothing;
+      * what remains of the domain must be mostly ACCOUNTED FOR by the name,
+        not merely contain it somewhere.
+
+    The caller must additionally refuse to use this on a shared domain: a
+    chain domain resembling one franchisee's name proves nothing at all.
+    """
+    core = re.sub(r"[^a-z0-9]", "", (domain or "").split(".")[0].lower())
+    for w in sorted(GENERIC_NAME_WORDS, key=len, reverse=True):
+        core = core.replace(w.lower(), "")
+    if len(core) < 4:
+        return False
+    tokens = set()
+    for n in names:
+        tokens |= {t for t in norm(n).split()
+                   if len(t) > 2 and t not in GENERIC_NAME_WORDS}
+    matched = "".join(sorted({t for t in tokens if t.lower() in core}, key=len))
+    if not matched or max((len(t) for t in tokens if t.lower() in core), default=0) < 4:
+        return False
+    return len(matched) / len(core) >= MIN_DOMAIN_COVERAGE
+
+
+def ownership(text: str, *, sirets=(), sirens=(), cps=(), tokens=(), phones=(),
+              domain: str = "", names=()) -> str:
     """Strongest proof the page gives that it belongs to THIS établissement.
 
     Extends m2_s9's ladder (L353-367) with one rung: a page printing the phone
@@ -181,6 +228,8 @@ def ownership(text: str, *, sirets=(), sirens=(), cps=(), tokens=(), phones=()) 
     name_hit = any(t in up for t in tokens)
     if cp_hit and name_hit:
         return "cp+nom"
+    if domain and names and domain_matches_name(domain, *names):
+        return "nom_domaine"
     if cp_hit:
         return "cp"
     return "none"
@@ -276,9 +325,9 @@ def classify(*, reached: bool, text: str, own: str, shared: bool,
         # Chain/network domain and no page of its own for this shop. The
         # network's mailbox and switchboard are not this bakery's.
         return "reseau", f"shared_domain+{own}"
-    if own == "cp+nom":
-        return ("valide", "own:cp+nom") if bakery >= 1 else \
-               ("hors_sujet", f"cp+nom_no_bakery:{bakery}")
+    if own in ("cp+nom", "nom_domaine"):
+        return ("valide", f"own:{own}") if bakery >= 1 else \
+               ("hors_sujet", f"{own}_no_bakery:{bakery}")
     # No ownership proof. Bakery content just means it is SOMEBODY's bakery —
     # CHAMADE shipped its competitor COULIN's site in V6 exactly this way.
     if bakery >= BAKERY_MIN:
@@ -368,6 +417,34 @@ def selftest() -> int:
     check("cp+nom", ownership(real_txt, cps=["13007"], tokens={"MARIUS"}), "cp+nom")
     check("cp only", ownership(real_txt, cps=["13007"], tokens={"ZZZTOP"}), "cp")
     check("nothing", ownership(real_txt, cps=["75001"], tokens={"ZZZTOP"}), "none")
+
+    print("domain_matches_name (the site whose only evidence is its own name):")
+    check("OH FAON! -> ohfaon.com", domain_matches_name("ohfaon.com", "OH FAON !"), True)
+    check("ALYN CAKE -> alyncake.fr", domain_matches_name("alyncake.fr", "ALYN CAKE"), True)
+    check("EMOTION SUCREE -> emotionssucrees.fr",
+          domain_matches_name("emotionssucrees.fr", "EMOTION SUCREE"), True)
+    check("trade word stripped, name still matches",
+          domain_matches_name("justinepatisseries.fr", "JUSTINE GUIDI"), True)
+    # The guard. Generic words identify a TRADE, never a company: letting PAIN
+    # count would award the chain's site to LA MIE DU PAIN in Vitrolles, one of
+    # the five wrong rows Sam reported.
+    check("generic words alone never match",
+          domain_matches_name("lamiedepain-boulangerie.fr", "LA MIE DU PAIN"), False)
+    check("'boulangerie' in the domain matches nobody",
+          domain_matches_name("boulangerie-ange.fr", "SARL BOULANGERIE"), False)
+    # Agriculture's stranger's-website bug, in domain form.
+    check("EARL DU VIEUX CHENE must not claim vieuxchene.fr on name alone",
+          domain_matches_name("vieuxchene.fr", "EARL DU VIEUX CHENE"), True)
+    check("...but an unrelated company on that domain does not",
+          domain_matches_name("vieuxchene.fr", "SARL DUPONT FRERES"), False)
+    # The legal name is often the trading name plus noise (EURL LA VAGUE B ->
+    # "La Vague Gourmande"): the distinctive token still accounts for most of
+    # the domain once the trade word is stripped, so this is a real match.
+    check("legal name extended by a trading name still matches",
+          domain_matches_name("lavaguegourmande.eu", "EURL LA VAGUE B"), True)
+    # Coverage is what stops it: one short token inside a long unrelated domain.
+    check("a name token buried in an unrelated long domain fails coverage",
+          domain_matches_name("grandsmoulinsdeprovencesudest.com", "SARL VAGUE"), False)
 
     print("shop_page_candidates (Sam's lamiedepain case):")
     urls = ["https://lamiedepain-boulangerie.fr",

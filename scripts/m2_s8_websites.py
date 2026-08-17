@@ -111,6 +111,19 @@ AGGREGATORS = (
     "au-magasin", "framaps",
     "mairie.biz", "mairie-gemenos", "mairie-du-paradou",
     "mairie13-14.marseille", "chateauneuflesmartigues",
+    # added 2026-08-17 from the m2_s21 hand-review. These render through
+    # JavaScript, so the validator can only say "unreadable" — and its rule is
+    # to flag what it cannot read rather than delete it (deleting on our own
+    # inability is agriculture's DNS-timeout bug). That rule is right, and the
+    # blacklist is the correct place to settle these instead: they are not
+    # judgement calls, they are known non-bakeries.
+    "reddit.", "vk.com", "vk.ru", "cheriefm", "macaddict", "ichtusmagazine",
+    "mariages.net", "jooble", "cataloxy", "wheree.", "horairesdouverture",
+    "eat-list.", "entreprise.one", "cessionpme", "data.inpi", "foodbevg",
+    "myfoodstory", "fiestaclic", "nojyk",
+    # communes and tourist offices reached the same way
+    "saint-chamas.com", "laciotat.com", "puyloubier.fr", "ville-rognac",
+    "saintvictoret", "otcarrylerouet", "mairie-ensues",
 )
 BAD_TLD = (".gouv.fr", ".gov", ".edu")
 

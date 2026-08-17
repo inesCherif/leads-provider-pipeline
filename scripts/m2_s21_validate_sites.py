@@ -248,7 +248,12 @@ def main() -> None:
                     help="--limit 25 --only-shipped: the worst V6 offenders first")
     ap.add_argument("--only-shipped", action="store_true",
                     help="only domains that actually appear in the V6 deliverable")
-    ap.add_argument("--domain", default="", help="re-check one domain")
+    ap.add_argument("--domain", default="",
+                    help="re-check one domain, or a comma-separated list")
+    ap.add_argument("--redo-verdict", default="",
+                    help="re-judge every domain holding a pair with this "
+                         "verdict (e.g. hors_sujet) — for when the RULES "
+                         "changed rather than the sites")
     ap.add_argument("--force", action="store_true", help="ignore the done file")
     args = ap.parse_args()
     if args.pilot:
@@ -269,9 +274,17 @@ def main() -> None:
 
     done = set() if args.force else load_done(DONE_PATH)
     todo = [d for d in by_domain if d not in done]
-    if args.domain:
-        want = args.domain.lower().replace("www.", "")
-        todo = [d for d in by_domain if want in d]
+    if args.redo_verdict:
+        # site_verdicts.csv is append-only and every reader takes the LAST row
+        # for a pair, so re-judging simply supersedes the old verdict.
+        want_v = {v.strip() for v in args.redo_verdict.split(",")}
+        again = {r["domain"] for r in read_rows(OUT_PATH) if r["verdict"] in want_v}
+        todo = [d for d in by_domain if d in again]
+        log.info(f"--redo-verdict {sorted(want_v)}: {len(todo)} domains to re-judge")
+    elif args.domain:
+        wants = [w.strip().lower().replace("www.", "")
+                 for w in args.domain.split(",") if w.strip()]
+        todo = [d for d in by_domain if any(w in d for w in wants)]
     elif args.only_shipped:
         todo = [d for d in todo if d in shipped]
     # Worst first: a --limit 25 pilot then covers every junk domain we already
@@ -356,7 +369,13 @@ def main() -> None:
             own = ownership(text, sirets=[r["siret"]], sirens=[r["siren"]],
                             cps=[r["code_postal"]],
                             tokens=name_tokens(f"{r['raison_sociale']} {r['hint']}"),
-                            phones=phones_of.get(r["siret"], ()))
+                            phones=phones_of.get(r["siret"], ()),
+                            # Never on a shared domain: a chain domain that
+                            # resembles one franchisee's name proves nothing,
+                            # and that is precisely how LA MIE DU PAIN in
+                            # Vitrolles would re-acquire the chain's site.
+                            domain="" if shared else domain,
+                            names=(r["raison_sociale"], r["hint"]))
             shop_url, shop_own = shop_urls.get(r["siret"], ("", ""))
             verdict, reason = classify(
                 reached=reached, text=text, own=shop_own or own, shared=shared,
