@@ -58,7 +58,8 @@ VERDICT_FR = {"valid": "valide", "invalid": "invalide",
 def collect_emails() -> dict[str, set]:
     """domain -> {addresses}. Reads every checkpoint that can carry an email."""
     out: dict[str, set] = {}
-    for fname, col in (("site_emails.csv", "email"), ("matched.csv", "email")):
+    for fname, col in (("site_emails.csv", "email"), ("matched.csv", "email"),
+                       ("social_emails.csv", "email")):
         p = CHECK_DIR / fname
         if not p.exists():
             continue

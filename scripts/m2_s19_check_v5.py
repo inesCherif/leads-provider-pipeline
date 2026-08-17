@@ -433,6 +433,22 @@ def main() -> None:
          "H25 every generated address sits on a domain proven to be the business's",
          f"{len(disowned)} disowned, e.g. {disowned[:4]}")
 
+    # H26 — the switchboard rule in e-mail form. m2_s18's Facebook harvest put
+    # contact@boulangerie-ange.fr on NINE of our SIREN and a chain's gmail
+    # comms address on nine more: a head office sold as nine independent
+    # bakeries' own mailbox. Same >2 SIREN threshold and same SIREN key as the
+    # phone guard, so one owner's several établissements are untouched. Run
+    # against V12-before-the-guard this fails on 6 addresses.
+    by_mail: dict = {}
+    for r in rows:
+        e = str(r["Email"] or "").strip().lower()
+        if e:
+            by_mail.setdefault(e, set()).add(str(r["SIREN"]))
+    mail_shared = {e: s for e, s in by_mail.items() if len(s) > 2}
+    hard(not mail_shared, "H26 no e-mail shipped as >2 companies' own address",
+         f"{len(mail_shared)} addresses, e.g. "
+         f"{[(e[:38], len(s)) for e, s in sorted(mail_shared.items(), key=lambda kv: -len(kv[1]))[:3]]}")
+
     # H12 — no regression. An enrichment that loses data is a bug.
     n_ph = len(phoned)
     n_em = sum(1 for r in rows if str(r["Email"]).strip())

@@ -422,6 +422,37 @@ def main() -> None:
         if r.get("domain") and s not in website and site_ok(s, "https://" + r["domain"]):
             website[s] = shop_of.get((s, r["domain"]), "https://" + r["domain"])
 
+    # ---- m2_s18: the shops' own public Facebook pages ----------------------
+    # Measured 42% yield where the website route was exhausted. Attribution
+    # rests on three things already proven before this file sees the row:
+    # H23/H24 (the page is a root, and belongs to one SIREN of ours), the
+    # harvester's geo gate (the page's printed postcode is ours — it rejected
+    # 47 of 197, a quarter of the URLs, as other towns' businesses), and
+    # is_public_body (no mairie mailboxes).
+    #
+    # Never `confirme`. A page IS the business's, but an address printed on it
+    # is still one remove from the shop's own domain, and this route has no
+    # equivalent of site validation behind it.
+    n_social_email = n_social_phone = 0
+    for r in read("social_emails.csv"):
+        s = r["siret"]
+        e = (r.get("email") or "").strip().lower()
+        if e and not is_third_party_email(e, e.partition("@")[2]):
+            v = verified.get(e, "non verifie")
+            cand[s].append((RANK.get(("faible", v), 9), e, v, "faible",
+                            f"social/{r.get('network', 'fb')}"))
+            srcs[s].add("social")
+            n_social_email += 1
+        ph = (r.get("phone") or "").strip()
+        if ph:
+            # Unranked on purpose: `social_fb` is absent from PHONE_RANK, so
+            # add_phone routes it to the corroboration pool. Facebook has
+            # never been measured against OSM/Maps the way pagesjaunes was
+            # (83.4%), and a page's printed number is exactly the kind of
+            # claim that needs a second witness before anyone dials it.
+            add_phone(s, ph, "social_fb")
+            n_social_phone += 1
+
     n_junk_site_phone = 0
     for r in site_contacts:
         s = r["siret"]
@@ -515,6 +546,33 @@ def main() -> None:
             claims[s] = [c for c in claims[s] if c[0] not in switchboards]
         log.info(f"switchboard guard: {len(switchboards)} number(s) claimed by "
                  f">2 companies dropped, e.g. {sorted(switchboards)[:3]}")
+
+    # SHARED-MAILBOX GUARD, the switchboard guard applied to e-mail. The
+    # Facebook harvest (m2_s18) surfaced `contact@boulangerie-ange.fr` on NINE
+    # of our SIRENs and `hatsboulangeriecommunication@gmail.com` on nine more:
+    # a franchise head office and a chain's comms mailbox, each sold as nine
+    # independent bakeries' own address. That is the network-mailbox defect
+    # (`lamiedepain-boulangerie.fr` on seven shops) arriving through the new
+    # source, and no earlier guard sees it — the domain test misses it
+    # entirely when the chain uses gmail.
+    #
+    # Same threshold and same key as the phone guard, deliberately: >2 SIREN,
+    # keyed on SIREN so one owner's several établissements keep their shared
+    # address. Three sibling entities on one family mailbox do get dropped,
+    # which is a real cost; a single rule that also removes a national chain's
+    # HQ from nine prospect rows is worth it, and an arbitrary higher cut-off
+    # would be unjustifiable.
+    by_email = defaultdict(set)
+    for s, cl in cand.items():
+        for c in cl:
+            by_email[c[1]].add(siren_of.get(s, s))
+    shared_mailboxes = {e for e, sirens in by_email.items() if len(sirens) > 2}
+    if shared_mailboxes:
+        for s in list(cand):
+            cand[s] = [c for c in cand[s] if c[1] not in shared_mailboxes]
+        log.info(f"shared-mailbox guard: {len(shared_mailboxes)} address(es) "
+                 f"claimed by >2 companies dropped, e.g. "
+                 f"{sorted(shared_mailboxes)[:3]}")
 
     # SHARED-URL GUARD, the switchboard guard applied to websites. A shop page
     # that several of our companies claim identifies none of them: three
@@ -641,6 +699,8 @@ def main() -> None:
     log.info(f"  addresses withheld as proven-invalid: {n_blocked}")
     log.info(f"  GENERATED addresses dropped as not ours (domain unproven, "
              f"shared or junk): {n_pattern_disowned}")
+    log.info(f"  from public Facebook pages (m2_s18): {n_social_email} e-mails, "
+             f"{n_social_phone} phone claims")
     log.info(f"  third-party addresses dropped (suppliers/aggregators): {n_third_party}")
     if verdicts:
         n_conf = Counter(r["site_confiance"] for r in rows if r["site_web"])
