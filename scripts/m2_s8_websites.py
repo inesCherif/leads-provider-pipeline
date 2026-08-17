@@ -101,6 +101,16 @@ AGGREGATORS = (
     # commune town-hall sites listing local shops (single-SIRET ones slip
     # past the reseau guard, and the mairie's mailbox is not the bakery's)
     "venelles.fr", "peynier.net", "plandecuques.fr",
+    # added 2026-08-17 after Sam's V6 review. Every one of these SHIPPED in
+    # V6 as a bakery's "Site web", and the first two shipped their own
+    # mailbox as the lead's e-mail (info@mapquest.com,
+    # contact@autour-de-moi.pro) — a real address at a company that is not
+    # our prospect, which is the mappy lesson from V4 repeated.
+    "mapquest", "autour-de-moi", "toogoodtogo", "rubypayeur", "restopropre",
+    "data-prospection", "dnb.com", "doctrine.", "boulangerie.contact",
+    "au-magasin", "framaps",
+    "mairie.biz", "mairie-gemenos", "mairie-du-paradou",
+    "mairie13-14.marseille", "chateauneuflesmartigues",
 )
 BAD_TLD = (".gouv.fr", ".gov", ".edu")
 
