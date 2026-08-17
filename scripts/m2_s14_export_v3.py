@@ -82,7 +82,7 @@ from scripts.m1_s8_export import ILLEGAL_XML            # noqa: E402
 from m2lib_contact import (normalize_fr_phone, is_surtaxe,  # noqa: E402
                            is_third_party_email, clean_social_url)
 from m2_s8_websites import AGGREGATORS                  # noqa: E402
-from m2lib_validate import (VERDICT_SHIPS, email_belongs_to,  # noqa: E402
+from m2lib_validate import (VERDICT_SHIPS, email_recoverable,  # noqa: E402
                             site_confiance)
 
 
@@ -244,6 +244,15 @@ def main() -> None:
             junk_domains[dom] = False
     junk_domains = {d for d, bad in junk_domains.items() if bad}
 
+    # Which of OUR companies each domain is attached to. Keyed on SIREN, like
+    # every other sharedness test here, so one company's several
+    # établissements on one domain is not "shared". This is what stops the
+    # e-mail recovery below handing a network's mailbox to seven shops.
+    siren_by_siret = {b["siret"]: b["siren"] for b in base}
+    domain_sirens: dict = defaultdict(set)
+    for (sir, dom) in verdicts:
+        domain_sirens[dom].add(siren_by_siret.get(sir, sir))
+
     def site_ok(siret: str, url: str) -> bool:
         """Does this (siret, url) survive validation?
 
@@ -329,6 +338,7 @@ def main() -> None:
         srcs[s].add("pattern")
 
     n_third_party = n_junk_site_email = n_named_recovered = 0
+    n_recovered_why: Counter = Counter()
     for r in site_emails:
         s, e = r["siret"], r["email"].lower()
         # Defence in depth: m2_s9 drops these at extraction, but checkpoints
@@ -349,17 +359,24 @@ def main() -> None:
             n_junk_site_email += 1
             continue
         if not site_ok(s, "https://" + r.get("domain", "")):
-            # The PAGE failed validation. That condemns the site, and it
-            # condemns an anonymous `contact@` found there — but not an
-            # address that names this very business. V7 deleted 264
-            # businesses' only e-mail on this rule, including
-            # lapatisseriedesmarseillais@gmail.com found on
-            # lapatisseriedesmarseillais.fr. The attribution of the PAGE was
-            # wrong; the address was not. See email_belongs_to().
-            if not email_belongs_to(e, r.get("raison_sociale", ""),
-                                    r.get("enseigne", "")):
+            # The PAGE failed validation. That condemns the SITE — but not
+            # every address printed on it. V7 deleted 264 businesses' only
+            # e-mail on this rule, and V8's name-only rescue won just 12 back.
+            #
+            # Ines's call, 2026-08-17: e-mail is the priority for this sector
+            # and a generic `contact@` is a normal small-business address, so
+            # genericness alone must not delete one. email_recoverable() keeps
+            # the rule that DOES matter — an address on somebody else's domain
+            # is somebody else's — and states which evidence saved each one.
+            dom_e = r.get("domain", "")
+            why = email_recoverable(
+                e, verdict=verdicts.get((s, dom_e), ""), crawled_domain=dom_e,
+                domain_shared=len(domain_sirens.get(dom_e, ())) > 1,
+                names=(r.get("raison_sociale", ""), r.get("enseigne", "")))
+            if not why:
                 n_junk_site_email += 1
                 continue
+            n_recovered_why[why] += 1
             conf_named = True
         else:
             conf_named = False
@@ -609,8 +626,9 @@ def main() -> None:
         log.info(f"    shop-specific pages shipped instead of a chain home: {n_shop}")
         log.info(f"    e-mails dropped (harvested from an unvalidated site): "
                  f"{n_junk_site_email} + {n_junk_mail} on a junk domain by another route")
-        log.info(f"    e-mails KEPT because the address names the business "
-                 f"(shipped `faible`): {n_named_recovered}")
+        log.info(f"    e-mails KEPT from a page that failed validation "
+                 f"(shipped `faible`): {n_named_recovered} — by evidence "
+                 f"{dict(n_recovered_why)}")
         log.info(f"    phones dropped (same reason): {n_junk_site_phone}")
         log.info(f"  with a contact page URL   "
                  f"{sum(1 for r in rows if r['page_contact']):>6}")

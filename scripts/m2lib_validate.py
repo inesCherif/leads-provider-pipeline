@@ -39,6 +39,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from m2_s9_emails import norm  # noqa: E402  (one definition, never a copy)
+from m2lib_contact import FREE_MAIL, _root  # noqa: E402
 
 # ------------------------------------------------------------ page text ----
 
@@ -262,6 +263,67 @@ def email_belongs_to(email: str, *names) -> bool:
         tokens |= {t.lower() for t in norm(n).split()
                    if len(t) > 3 and t not in GENERIC_NAME_WORDS}
     return any(t in l or t in d for t in tokens)
+
+
+# Verdicts under which an address found on the page may still be the shop's
+# own. `annuaire` and `reseau` say the PAGE is not this shop's page — a
+# directory listing, or a domain we attached to several companies — but a
+# directory prints real shops' contact details, which is what a directory is
+# FOR. `non_verifiable` never claimed anything at all.
+#
+# `hors_sujet` and `parked` are excluded on purpose: a page about something
+# else has no reason to be printing our prospect's mailbox, and an address
+# found there belongs to whoever the page IS about. `mort` is excluded too —
+# nothing can be re-read to check.
+VERDICT_MAY_STILL_HOLD_EMAIL = {"annuaire", "reseau", "non_verifiable"}
+
+
+def email_recoverable(email: str, *, verdict: str, crawled_domain: str,
+                      domain_shared: bool, names=()) -> str:
+    """Why this address survives a page that failed validation — or "".
+
+    Ines's call, 2026-08-17: for a small bakery a generic `contact@` IS the
+    business's e-mail, so genericness alone must never delete an address. What
+    still deletes one is the rule Sam's V6 review established — an address
+    whose domain belongs to somebody ELSE (info@mapquest.com, contact@
+    autour-de-moi.pro) is not our prospect's, however real the mailbox is.
+
+    Three ways an address survives, each a different kind of evidence:
+
+      `nom`      the address carries the business's own name, so it identifies
+                 the row whatever the page around it was (email_belongs_to).
+      `domaine`  it lives on the very domain we crawled, and that domain is
+                 ours alone — contact@lamiedupanier.fr found on
+                 lamiedupanier.fr. Excluded when the domain is SHARED across
+                 our SIRETs, which is the lamiedepain-boulangerie.fr case: a
+                 network mailbox sold as seven different shops' address.
+      `boite`    a consumer mailbox (gmail/orange/…) printed on a directory
+                 or network page. A directory publishes its own corporate
+                 address as contact@<directory>.fr, never as @gmail.com, so a
+                 free mailbox on such a page is the listed shop's, not the
+                 publisher's.
+
+    Callers must still run is_third_party_email() first: this function answers
+    "does the failed PAGE condemn the address", not "whose domain is this".
+    """
+    local, _, dom = (email or "").lower().partition("@")
+    if not local or not dom:
+        return ""
+    if verdict not in VERDICT_MAY_STILL_HOLD_EMAIL:
+        return ""
+    if email_belongs_to(email, *names):
+        return "nom"
+    if dom in FREE_MAIL:
+        return "boite"
+    # `domaine` must NOT apply to a directory. On an `annuaire` page the
+    # crawled domain IS the publisher's, so "the address lives on the domain
+    # we crawled" says it is the DIRECTORY's mailbox — contact@autour-de-moi
+    # .pro and info@mapquest.com are both exactly this shape, and both shipped
+    # in V6. The selftest below fails if this gate is removed.
+    if (verdict != "annuaire" and crawled_domain
+            and _root(dom) == _root(crawled_domain) and not domain_shared):
+        return "domaine"
+    return ""
 
 
 # ------------------------------------------------- chain shop pages ----
@@ -570,6 +632,44 @@ def selftest() -> int:
     print("taxonomy wiring:")
     check("ships set", VERDICT_SHIPS, {"valide", "non_verifiable"})
     check("no verdict is both ship and junk", VERDICT_SHIPS & VERDICT_JUNK, set())
+
+    print("email_recoverable (V9 — e-mail is the priority, generic is fine):")
+    R = email_recoverable
+    # The address that started all this: a gmail carrying the shop's name,
+    # harvested from its own domain, condemned only because two SIREN shared it.
+    check("named gmail on a reseau page",
+          R("lapatisseriedesmarseillais@gmail.com", verdict="reseau",
+            crawled_domain="lapatisseriedesmarseillais.fr", domain_shared=True,
+            names=("LA PATISSERIE DES MARSEILLAIS",)), "nom")
+    # Ines's point: generic is NORMAL for a small bakery.
+    check("generic contact@ on its OWN domain",
+          R("contact@lamiedupanier.fr", verdict="non_verifiable",
+            crawled_domain="lamiedupanier.fr", domain_shared=False), "domaine")
+    check("...but not when the domain is shared across our SIREN",
+          R("contact@lamiedepain-boulangerie.fr", verdict="reseau",
+            crawled_domain="lamiedepain-boulangerie.fr", domain_shared=True), "")
+    check("free mailbox printed on a directory listing",
+          R("boulangerie.du.port@orange.fr", verdict="annuaire",
+            crawled_domain="pagesjaunes.fr", domain_shared=False), "boite")
+    # The V6 defect that must never come back: an aggregator's own mailbox.
+    check("directory's OWN mailbox stays dead",
+          R("contact@autour-de-moi.pro", verdict="annuaire",
+            crawled_domain="autour-de-moi.pro", domain_shared=False), "")
+    check("mapquest stays dead",
+          R("info@mapquest.com", verdict="annuaire", crawled_domain="mapquest.com",
+            domain_shared=False), "")
+    # A page about something else has no reason to print our prospect's address.
+    check("hors_sujet recovers nothing",
+          R("contact@marius.fr", verdict="hors_sujet", crawled_domain="marius.fr",
+            domain_shared=False), "")
+    check("mort recovers nothing",
+          R("x@gmail.com", verdict="mort", crawled_domain="marius.fr",
+            domain_shared=False), "")
+    check("supplier on a directory page is not recovered by `domaine`",
+          R("contact@pavailler.com", verdict="annuaire", crawled_domain="marius.fr",
+            domain_shared=False), "")
+    check("no domain", R("broken", verdict="annuaire", crawled_domain="x.fr",
+                         domain_shared=False), "")
 
     print(f"\n{'ALL OK' if not failed else str(failed) + ' FAILED'}")
     return 1 if failed else 0
