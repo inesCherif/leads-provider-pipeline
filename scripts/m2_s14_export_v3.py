@@ -99,7 +99,7 @@ def usable_site(url: str) -> bool:
 
 CHECK_DIR = PROJECT_ROOT / "exports" / "boulangerie" / "checkpoints"
 OUT_DIR   = PROJECT_ROOT / "exports" / "boulangerie"
-BASENAME  = "boulangerie_13_v7"
+BASENAME  = "boulangerie_13_v8"
 
 COLUMNS = [
     ("siret",                "SIRET"),
