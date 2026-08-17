@@ -34,6 +34,11 @@ Checks (hard = exit 1, warn = reported, exit 0):
   H18 no Site web on an aggregator/registry domain — V3-era crawls sold
       myboulange.fr (a directory) as 97 bakeries' own site, and infonet.fr
       pages yielded contact@axa.fr as a bakery's address
+  H19-H22 site validation (m2_s21): judged, shippable, not raced, not shared
+  H23 no Facebook/Instagram deep link (a post/photo/video is somebody ELSE
+      writing about the shop) — Sam opened a France Bleu post in V8
+  H24 no identical social URL across several SIREN — one news video shipped
+      as 43 bakeries' own page
   W1  row count inside a sanity band (1,000-2,400)
   W2  contact-name coverage >= 70%
   W3  phone coverage inside a sanity band
@@ -338,6 +343,45 @@ def main() -> None:
     else:
         hard(False, "H19 site validation ran",
              f"{VERDICTS_PATH.name} missing — run scripts/m2_s21_validate_sites.py first")
+
+    # H23-H24 — social links, from Sam's V8 review. He opened a Facebook value
+    # and landed on a France Bleu POST about a bakery rather than the bakery.
+    # Measured on V8: 233 of 939 Facebook values were content URLs, and one
+    # MarseilleFoodGuide video shipped as 43 different bakeries' page.
+    #
+    # H23 — a business page is a ROOT path. Anything deeper is somebody else
+    # writing about the shop, which is evidence AGAINST ownership, not for it.
+    deep = []
+    for r in rows:
+        for col in ("Facebook", "Instagram"):
+            u = str(r[col] or "").strip()
+            if not u:
+                continue
+            path = re.sub(r"^https?://[^/]+/?", "", u.rstrip("/"))
+            if path.lower().startswith("profile.php?id="):
+                continue            # numeric page id: a page, not a deep link
+            if len([s for s in path.split("/") if s]) > 1 or re.search(
+                    r"/(posts|photos?|videos?|permalink|story|watch|reels?)(/|$)",
+                    u, re.I):
+                deep.append(f'{r["SIRET"]}:{u[:70]}')
+    hard(not deep, "H23 no Facebook/Instagram deep link (post, photo, video)",
+         f"{len(deep)} rows, e.g. {deep[:3]}")
+
+    # H24 — the shared-URL rule (H22) applied to socials. A page that 43 of
+    # our companies claim identifies none of them. Franchise pages are dropped
+    # too, by Ines's decision of 2026-08-17: a national brand's page is not
+    # this shop's page.
+    soc_shared = {}
+    for col in ("Facebook", "Instagram"):
+        by_u: dict = {}
+        for r in rows:
+            u = str(r[col] or "").strip().lower().rstrip("/")
+            if u:
+                by_u.setdefault(u, set()).add(str(r["SIREN"]))
+        soc_shared.update({u: s for u, s in by_u.items() if len(s) > 1})
+    hard(not soc_shared, "H24 no identical social URL across several SIREN",
+         f"{len(soc_shared)} URLs, e.g. "
+         f"{[(u[:50], len(s)) for u, s in sorted(soc_shared.items(), key=lambda kv: -len(kv[1]))[:3]]}")
 
     # H12 — no regression. An enrichment that loses data is a bug.
     n_ph = len(phoned)

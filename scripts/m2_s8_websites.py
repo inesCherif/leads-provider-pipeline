@@ -253,9 +253,16 @@ def main() -> None:
             # gate and the phone must come from the SAME result. The result's
             # domain is recorded: m2_s14's corroborator can then tell whether
             # a second snippet witness is genuinely a different publisher.
+            # Socials are mined the SAME way, per geo-passing result, and for
+            # the same reason. V8 shipped 233 junk Facebook values because
+            # this ran over the merged blob: `extract_social()` returns the
+            # most FREQUENT link, and across 8 unrelated results that is
+            # whatever went viral — a France Bleu / MarseilleFoodGuide piece
+            # ABOUT a bakery, which then shipped as 43 bakeries' own page.
+            # One result, one business: the geo gate that protects the phone
+            # protects the social link too.
             phone_val, phone_domain, geo_ok = "", "", False
-            blob_all = " ".join(f"{res['title']} {res['snippet']} {res['url']}"
-                                for res in results)
+            social = {"facebook": "", "instagram": "", "linkedin": ""}
             for res in results:
                 rb = f"{res['title']} {res['snippet']} {res['url']}"
                 if not ((r["code_postal"] in rb) or (norm(r["commune"]) in norm(rb))):
@@ -266,7 +273,10 @@ def main() -> None:
                     phone_val = sorted(ph)[0]
                     phone_domain = urllib.parse.urlparse(res["url"]).netloc \
                         .lower().replace("www.", "")
-            social = extract_social(blob_all)
+                s = extract_social(rb)
+                for net in social:
+                    if s[net] and not social[net]:
+                        social[net] = s[net]
 
             if best or phone_val or social["facebook"] or social["instagram"]:
                 flush({"siret": r["siret"], "siren": r["siren"],

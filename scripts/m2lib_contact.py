@@ -145,14 +145,87 @@ IG_RE = re.compile(
 LI_RE = re.compile(
     r"https?://(?:[a-z]{2}\.)?linkedin\.com/(company|in)/([^\s\"'<>?#/]+)", re.I)
 
+# Numeric-id pages (`profile.php?id=123`) are a real page identity, and the
+# query string is the only place the id lives — FB_RE stops at `?`, so they
+# need their own pattern or they are lost.
+FB_PROFILE_RE = re.compile(
+    r"https?://(?:www\.|m\.|fr-fr\.|web\.)?facebook\.com/profile\.php\?id=(\d{5,})", re.I)
+
 # Widget/share/login paths that appear on almost every site and are NOT the
 # business's own page. First path segment, lowercased, compared exactly.
 FB_JUNK = {"sharer", "sharer.php", "share", "share.php", "login", "login.php",
            "plugins", "dialog", "hashtag", "events", "watch", "reel", "groups",
            "policies", "help", "privacy", "legal", "tr", "l.php", "photo.php",
            "story.php", "home.php", "recover", "pages", "marketplace", "about"}
+
+# CONTENT paths: a post, a video, a photo. Measured on the V8 deliverable —
+# 233 of 939 shipped Facebook values were these, and ONE France-Bleu-style
+# video URL (`MarseilleFoodGuide/videos/...`) shipped as the page of 43
+# different bakeries. The media outlet published a piece ABOUT a bakery; the
+# outlet's page is not the bakery's page.
+#
+# The rule is REJECT, never truncate to the first segment. Truncating
+# `MarseilleFoodGuide/videos/xyz` yields `MarseilleFoodGuide` — the food
+# blog's own page, handed to 43 shops. A deep link is evidence that somebody
+# ELSE wrote about this business, so it is evidence AGAINST ownership.
+FB_DEEP = {"posts", "photos", "photo", "videos", "video", "permalink",
+           "story", "story.php", "reviews", "notes", "live", "media",
+           "watch", "reel", "reels", "events", "groups"}
+
 IG_JUNK = {"p", "reel", "reels", "explore", "accounts", "stories", "share",
            "developer", "about", "legal", "directory", "invites"}
+
+
+def _fb_page_url(path: str) -> str:
+    """Canonical FB page URL for a captured path, or "" when it is not a page.
+
+    A business page is a ROOT path: `facebook.com/BoulangerieMarius`. Anything
+    deeper is content (a post, a video), a widget, or a share link.
+    """
+    path = (path or "").rstrip("/").rstrip("\\")
+    if not path:
+        return ""
+    segs = [s for s in path.split("/") if s]
+    if len(segs) != 1:                      # deep link -> reject, never truncate
+        return ""
+    seg = segs[0].lower()
+    if seg in FB_JUNK or seg in FB_DEEP or seg.endswith(".php"):
+        return ""
+    return f"https://www.facebook.com/{segs[0]}"
+
+
+def _ig_page_url(handle: str) -> str:
+    """Canonical Instagram profile URL, or "" when the handle is a junk path."""
+    handle = (handle or "").rstrip(".").rstrip("/")
+    if not handle or handle.lower() in IG_JUNK:
+        return ""
+    return f"https://www.instagram.com/{handle}"
+
+
+def clean_social_url(url: str, network: str) -> str:
+    """Re-apply the page-URL rules to an ALREADY STORED value.
+
+    Checkpoints written before these rules existed hold deep links, so the
+    export re-cleans every value it reads instead of re-running the harvest
+    (the crawl costs quota; the checkpoints are on disk and free). Returns the
+    canonical page URL, or "" when the stored value is not a page at all.
+    """
+    u, net = (url or "").strip(), (network or "").lower()
+    if not u:
+        return ""
+    if net == "facebook":
+        m = FB_PROFILE_RE.search(u)
+        if m:
+            return f"https://www.facebook.com/profile.php?id={m.group(1)}"
+        m = FB_RE.search(u)
+        return _fb_page_url(m.group(1)) if m else ""
+    if net == "instagram":
+        m = IG_RE.search(u)
+        return _ig_page_url(m.group(1)) if m else ""
+    if net == "linkedin":
+        m = LI_RE.search(u)
+        return f"https://www.linkedin.com/{m.group(1).lower()}/{m.group(2)}" if m else ""
+    return ""
 
 
 def extract_social(html: str) -> dict:
@@ -160,19 +233,21 @@ def extract_social(html: str) -> dict:
 
     When several candidates appear, the most frequent wins — a site links its
     own page from every footer, but a share widget only once per article.
+    Caveat for callers: that heuristic assumes ONE page's markup. Do not feed
+    it a blob of unrelated search results, where the most frequent link is
+    whatever went viral (see m2_s8, which mines per result).
     """
     fb, ig, li = Counter(), Counter(), Counter()
+    for m in FB_PROFILE_RE.finditer(html or ""):
+        fb[f"https://www.facebook.com/profile.php?id={m.group(1)}"] += 1
     for m in FB_RE.finditer(html or ""):
-        path = m.group(1).rstrip("/").rstrip("\\")
-        seg = path.split("/")[0].lower()
-        if not path or seg in FB_JUNK or seg.endswith(".php"):
-            continue
-        fb[f"https://www.facebook.com/{path}"] += 1
+        u = _fb_page_url(m.group(1))
+        if u:
+            fb[u] += 1
     for m in IG_RE.finditer(html or ""):
-        handle = m.group(1).rstrip(".")
-        if handle.lower() in IG_JUNK:
-            continue
-        ig[f"https://www.instagram.com/{handle}"] += 1
+        u = _ig_page_url(m.group(1))
+        if u:
+            ig[u] += 1
     for m in LI_RE.finditer(html or ""):
         li[f"https://www.linkedin.com/{m.group(1).lower()}/{m.group(2)}"] += 1
     return {
@@ -321,6 +396,52 @@ def selftest() -> int:
     check("linkedin company", got["linkedin"],
           "https://www.linkedin.com/company/marius-sarl")
     check("empty html", extract_social(""), {"facebook": "", "instagram": "", "linkedin": ""})
+
+    # The V8 defect: deep links shipped as pages. Every URL below was really
+    # in the deliverable. A post about a bakery is not the bakery's page, and
+    # truncating it to its first segment hands a media outlet's page to every
+    # shop it ever wrote about (MarseilleFoodGuide reached 43 rows that way).
+    print("extract_social — deep links are REJECTED, never truncated:")
+    for label, deep in (
+        ("news video", "https://www.facebook.com/MarseilleFoodGuide/videos/les-meilleures-boulangeries"),
+        ("news post", "https://www.facebook.com/ruedelarep/posts/ouverture-la-boulangerie"),
+        ("radio post", "https://www.facebook.com/francebleuprovence/posts/10158803518732125"),
+        ("photo", "https://www.facebook.com/BoulangerieMarius/photos/12345"),
+        ("permalink", "https://www.facebook.com/somepage/permalink/999"),
+    ):
+        check(f"reject {label}", extract_social(f'<a href="{deep}">x</a>')["facebook"], "")
+    check("root page still kept",
+          extract_social('<a href="https://www.facebook.com/BoulangerieMarius">x</a>')["facebook"],
+          "https://www.facebook.com/BoulangerieMarius")
+    check("numeric profile kept",
+          extract_social('<a href="https://www.facebook.com/profile.php?id=100041790597284">x</a>')["facebook"],
+          "https://www.facebook.com/profile.php?id=100041790597284")
+    # A page that also publishes posts must still yield its page URL.
+    check("page wins when both present",
+          extract_social('<a href="https://www.facebook.com/BoulangerieMarius/posts/1">p</a>'
+                         '<a href="https://www.facebook.com/BoulangerieMarius">page</a>'
+                         )["facebook"],
+          "https://www.facebook.com/BoulangerieMarius")
+
+    print("clean_social_url (re-cleaning values already on disk):")
+    check("stored deep link dropped",
+          clean_social_url("https://www.facebook.com/MarseilleFoodGuide/videos/xyz", "facebook"), "")
+    check("stored page kept",
+          clean_social_url("https://www.facebook.com/ange.boulangerie", "facebook"),
+          "https://www.facebook.com/ange.boulangerie")
+    check("trailing slash normalised",
+          clean_social_url("https://www.facebook.com/BoulangerieMarius/", "facebook"),
+          "https://www.facebook.com/BoulangerieMarius")
+    check("m. host normalised",
+          clean_social_url("https://m.facebook.com/BoulangerieMarius", "facebook"),
+          "https://www.facebook.com/BoulangerieMarius")
+    check("stored IG profile kept",
+          clean_social_url("https://www.instagram.com/boulangerie.marius", "instagram"),
+          "https://www.instagram.com/boulangerie.marius")
+    check("stored IG post dropped",
+          clean_social_url("https://www.instagram.com/p/Cxyz123", "instagram"), "")
+    check("empty in, empty out", clean_social_url("", "facebook"), "")
+    check("non-social url", clean_social_url("https://boulangerie-marius.fr", "facebook"), "")
 
     print(f"\n{'ALL OK' if not failed else str(failed) + ' FAILED'}")
     return 1 if failed else 0

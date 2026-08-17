@@ -80,7 +80,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
 
 from scripts.m1_s8_export import ILLEGAL_XML            # noqa: E402
 from m2lib_contact import (normalize_fr_phone, is_surtaxe,  # noqa: E402
-                           is_third_party_email)
+                           is_third_party_email, clean_social_url)
 from m2_s8_websites import AGGREGATORS                  # noqa: E402
 from m2lib_validate import (VERDICT_SHIPS, email_belongs_to,  # noqa: E402
                             site_confiance)
@@ -99,7 +99,7 @@ def usable_site(url: str) -> bool:
 
 CHECK_DIR = PROJECT_ROOT / "exports" / "boulangerie" / "checkpoints"
 OUT_DIR   = PROJECT_ROOT / "exports" / "boulangerie"
-BASENAME  = "boulangerie_13_v8"
+BASENAME  = "boulangerie_13_v8"      # default; override with --version
 
 COLUMNS = [
     ("siret",                "SIRET"),
@@ -203,7 +203,14 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Build the V3 boulangerie deliverable")
     ap.add_argument("--only-reachable", action="store_true",
                     help="keep only rows with a phone or an email")
+    # A build must never silently overwrite the version that was sent to the
+    # client. Naming the target explicitly is also what lets m2_s19 compare a
+    # new build against the shipped one (--version v9 --baseline v8).
+    ap.add_argument("--version", default="v8",
+                    help="deliverable version to write, e.g. v9 (default: v8)")
     args = ap.parse_args()
+    global BASENAME
+    BASENAME = f"boulangerie_13_{args.version}"
 
     base = read("etablissements.csv")
     if not base:
@@ -277,6 +284,18 @@ def main() -> None:
         rank = PHONE_RANK[source] + (100 if is_surtaxe(p) else 0)
         phones[siret].append((rank, p, source))
 
+    def add_social(store, siret, raw, net):
+        """First non-empty PAGE url wins, per network.
+
+        Every value is re-cleaned on the way in. The checkpoints predate the
+        page-URL rules and hold deep links (a post, a video) harvested when
+        `extract_social()` still accepted them; re-cleaning here repairs the
+        deliverable without re-running any crawl. See clean_social_url().
+        """
+        u = clean_social_url(raw, net)
+        if u and siret not in store:
+            store[siret] = u
+
     for m in matched:
         s, src = m["siret"], m["source"]
         add_phone(s, m.get("phone", ""), src)
@@ -285,14 +304,13 @@ def main() -> None:
         if m.get("website") and s not in website:
             low = m["website"].lower()
             if "instagram.com" in low:
-                instagram.setdefault(s, m["website"])
+                add_social(instagram, s, m["website"], "instagram")
             elif "facebook.com" in low:
-                facebook.setdefault(s, m["website"])
+                add_social(facebook, s, m["website"], "facebook")
             elif site_ok(s, m["website"]):
                 website[s] = shop_of.get((s, host(m["website"])), m["website"])
                 srcs[s].add(src)
-        if m.get("facebook") and s not in facebook:
-            facebook[s] = m["facebook"]
+        add_social(facebook, s, m.get("facebook", ""), "facebook")
         if m.get("email"):
             e = m["email"].lower()
             v = verified.get(e, "non verifie")
@@ -382,8 +400,7 @@ def main() -> None:
                 srcs[s].add("site")
         for key, store in (("facebook", facebook), ("instagram", instagram),
                            ("linkedin", linkedin)):
-            if r.get(key) and s not in store:
-                store[s] = r[key]
+            add_social(store, s, r.get(key, ""), key)
         if r.get("domain") and s not in website and ok:
             website[s] = shop_of.get((s, r["domain"]), "https://" + r["domain"])
 
@@ -403,8 +420,7 @@ def main() -> None:
             website[s] = shop_of.get((s, host(r["website"])), r["website"])
             srcs[s].add("recherche")
         for key, store in (("facebook", facebook), ("instagram", instagram)):
-            if r.get(key) and s not in store:
-                store[s] = r[key]
+            add_social(store, s, r.get(key, ""), key)
 
     # CORROBORATION. A single untrusted claim is a lead (snippet 76%,
     # site/faible 17%). But two INDEPENDENT sources naming the same number is
@@ -476,6 +492,32 @@ def main() -> None:
                    if u.rstrip("/").lower() not in ambiguous_urls}
         log.info(f"shared-URL guard: {len(ambiguous_urls)} URL(s) claimed by >1 "
                  f"company dropped, e.g. {sorted(ambiguous_urls)[:2]}")
+
+    # SHARED-SOCIAL GUARD, the same rule for Facebook/Instagram. Measured on
+    # V8: 121 Facebook URLs sat on more than one company (421 rows) and 93
+    # Instagram URLs on 312 — `MarseilleFoodGuide` on 43 bakeries, chain pages
+    # (`ange.boulangerie` 21, `MarieBlachereFR` 10) on their franchisees.
+    #
+    # Ines's call, 2026-08-17: DROP the chain pages too, no franchise
+    # whitelist. A national brand's page is not this shop's page — the same
+    # reasoning that makes a network domain `reseau` — and a link that a
+    # prospect list shows on 21 rows reads as junk to the client whether or
+    # not it is technically the right brand. Social is not the channel here;
+    # phone and e-mail are.
+    for label, store in (("facebook", facebook), ("instagram", instagram),
+                         ("linkedin", linkedin)):
+        by_url: dict = defaultdict(set)
+        for s, u in store.items():
+            by_url[u.rstrip("/").lower()].add(siren_of_siret.get(s, s))
+        shared = {u for u, sr in by_url.items() if len(sr) > 1}
+        if not shared:
+            continue
+        dropped = [s for s, u in store.items() if u.rstrip("/").lower() in shared]
+        for s in dropped:
+            del store[s]
+        log.info(f"shared-social guard ({label}): {len(shared)} URL(s) on >1 "
+                 f"company dropped from {len(dropped)} row(s), "
+                 f"e.g. {sorted(shared)[:2]}")
 
     # A junk domain's own mailbox is never a prospect's address, whichever
     # route it arrived by. The site loop already refuses them; this catches
