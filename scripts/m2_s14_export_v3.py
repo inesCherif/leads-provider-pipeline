@@ -70,6 +70,7 @@ import argparse
 import csv
 import logging
 import sys
+import urllib.parse
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -81,6 +82,11 @@ from scripts.m1_s8_export import ILLEGAL_XML            # noqa: E402
 from m2lib_contact import (normalize_fr_phone, is_surtaxe,  # noqa: E402
                            is_third_party_email)
 from m2_s8_websites import AGGREGATORS                  # noqa: E402
+from m2lib_validate import VERDICT_SHIPS, site_confiance  # noqa: E402
+
+
+def host(url: str) -> str:
+    return urllib.parse.urlparse(url or "").netloc.lower().replace("www.", "")
 
 
 def usable_site(url: str) -> bool:
@@ -92,7 +98,7 @@ def usable_site(url: str) -> bool:
 
 CHECK_DIR = PROJECT_ROOT / "exports" / "boulangerie" / "checkpoints"
 OUT_DIR   = PROJECT_ROOT / "exports" / "boulangerie"
-BASENAME  = "boulangerie_13_v6"
+BASENAME  = "boulangerie_13_v7"
 
 COLUMNS = [
     ("siret",                "SIRET"),
@@ -116,6 +122,8 @@ COLUMNS = [
     ("email_confiance",      "Email confiance"),
     ("autres_emails",        "Autres emails"),
     ("site_web",             "Site web"),
+    ("site_confiance",       "Site confiance"),
+    ("page_contact",         "Page contact"),
     ("facebook",             "Facebook"),
     ("instagram",            "Instagram"),
     ("linkedin",             "LinkedIn"),
@@ -205,6 +213,44 @@ def main() -> None:
     discovered = read("discovered_sites.csv")
     verified = {r["email"].lower(): r["verdict"] for r in read("verified_emails.csv")}
 
+    # M2-S21's verdicts. Sam's ask: "valider le site web (boulangerie) ou
+    # supprimer le site web si incorrect". Keyed on (siret, domain) because a
+    # chain domain is right for one of our rows and wrong for the next six.
+    verdicts, junk_domains, shop_of, contact_of, conf_of = {}, {}, {}, {}, {}
+    for r in read("site_verdicts.csv"):
+        key = (r["siret"], r["domain"])
+        verdicts[key] = r["verdict"]
+        if r["verdict"] in VERDICT_SHIPS:
+            conf_of[key] = site_confiance(r["verdict"], r.get("ownership", ""))
+            if r.get("shop_url"):
+                shop_of[key] = r["shop_url"]
+            if r.get("contact_url"):
+                contact_of[key] = r["contact_url"]
+        else:
+            # A domain that is junk for EVERY row it touches is junk full
+            # stop — that is what kills info@mapquest.com even when the
+            # address arrives by a different route than the site did.
+            junk_domains.setdefault(r["domain"], True)
+    for (_, dom), v in verdicts.items():
+        if v in VERDICT_SHIPS:
+            junk_domains[dom] = False
+    junk_domains = {d for d, bad in junk_domains.items() if bad}
+
+    def site_ok(siret: str, url: str) -> bool:
+        """Does this (siret, url) survive validation?
+
+        Fail-CLOSED once the checkpoint exists: a pair nobody judged is a
+        pair nobody proved, and V6's real defect was shipping 492 sites that
+        had never been verified at all. With no checkpoint on disk the
+        function is transparent, and the H19/H21 gates then fail the build
+        rather than letting an unvalidated file ship quietly.
+        """
+        if not usable_site(url):
+            return False
+        if not verdicts:
+            return True
+        return verdicts.get((siret, host(url)), "") in VERDICT_SHIPS
+
     # siret -> [(rank, phone, source)] — every claim kept, best one exported.
     phones: dict = defaultdict(list)
     # EVERY untrusted claim is kept, not just the first. Keeping one per siret
@@ -241,8 +287,8 @@ def main() -> None:
                 instagram.setdefault(s, m["website"])
             elif "facebook.com" in low:
                 facebook.setdefault(s, m["website"])
-            elif usable_site(m["website"]):
-                website[s] = m["website"]
+            elif site_ok(s, m["website"]):
+                website[s] = shop_of.get((s, host(m["website"])), m["website"])
                 srcs[s].add(src)
         if m.get("facebook") and s not in facebook:
             facebook[s] = m["facebook"]
@@ -263,7 +309,7 @@ def main() -> None:
                         "pattern/verifie", "pattern"))
         srcs[s].add("pattern")
 
-    n_third_party = 0
+    n_third_party = n_junk_site_email = 0
     for r in site_emails:
         s, e = r["siret"], r["email"].lower()
         # Defence in depth: m2_s9 drops these at extraction, but checkpoints
@@ -272,26 +318,45 @@ def main() -> None:
         if is_third_party_email(e, r.get("domain", "")):
             n_third_party += 1
             continue
+        # An address harvested from a page that is not this bakery's page is
+        # not this bakery's address, however well-formed it looks. Two
+        # independent tests, because the address and the site can arrive by
+        # different routes: the page it came FROM, and the domain it lives ON
+        # (contact@autour-de-moi.pro fails the second even if the first is
+        # somehow clean).
+        if not site_ok(s, "https://" + r.get("domain", "")) \
+                or e.partition("@")[2] in junk_domains:
+            n_junk_site_email += 1
+            continue
         v = verified.get(e, "non verifie")
         conf = r.get("confiance") or "faible"
         cand[s].append((RANK.get((conf, v), 9), e, v, conf, "site"))
         srcs[s].add("site")
-        if r.get("domain") and s not in website and usable_site(r["domain"]):
-            website[s] = "https://" + r["domain"]
+        if r.get("domain") and s not in website and site_ok(s, "https://" + r["domain"]):
+            website[s] = shop_of.get((s, r["domain"]), "https://" + r["domain"])
 
+    n_junk_site_phone = 0
     for r in site_contacts:
         s = r["siret"]
-        # site/faible is not in PHONE_RANK, so add_phone routes it to `piste`.
-        src = "site/confirme" if r.get("confiance") == "confirme" else "site/faible"
-        add_phone(s, r.get("phone", ""), src)
-        if r.get("phone") and r.get("confiance") == "confirme":
-            srcs[s].add("site")
+        ok = site_ok(s, "https://" + r.get("domain", ""))
+        # A directory PRINTS our SIRET, so m2_s9 scored several of them
+        # `confirme` — which is rank 3 in PHONE_RANK, a dialled number. The
+        # switchboard on a hygiene-inspection site is not this bakery's line.
+        if not ok:
+            if r.get("phone"):
+                n_junk_site_phone += 1
+        else:
+            # site/faible is not in PHONE_RANK, so add_phone routes it to `piste`.
+            src = "site/confirme" if r.get("confiance") == "confirme" else "site/faible"
+            add_phone(s, r.get("phone", ""), src)
+            if r.get("phone") and r.get("confiance") == "confirme":
+                srcs[s].add("site")
         for key, store in (("facebook", facebook), ("instagram", instagram),
                            ("linkedin", linkedin)):
             if r.get(key) and s not in store:
                 store[s] = r[key]
-        if r.get("domain") and s not in website and usable_site(r["domain"]):
-            website[s] = "https://" + r["domain"]
+        if r.get("domain") and s not in website and ok:
+            website[s] = shop_of.get((s, r["domain"]), "https://" + r["domain"])
 
     for r in discovered:
         s = r["siret"]
@@ -305,8 +370,8 @@ def main() -> None:
             # Old rows without phone_domain stay the opaque "snippet" witness.
             src = f"serp/{r['phone_domain']}" if r.get("phone_domain") else "snippet"
             add_phone(s, r["phone"], src)           # -> piste, never dialled
-        if r.get("website") and s not in website and usable_site(r["website"]):
-            website[s] = r["website"]
+        if r.get("website") and s not in website and site_ok(s, r["website"]):
+            website[s] = shop_of.get((s, host(r["website"])), r["website"])
             srcs[s].add("recherche")
         for key, store in (("facebook", facebook), ("instagram", instagram)):
             if r.get(key) and s not in store:
@@ -392,6 +457,8 @@ def main() -> None:
             "email_confiance": best[3] if best else "",
             "autres_emails": str(len(usable) - 1) if len(usable) > 1 else "",
             "site_web": website.get(s, ""),
+            "site_confiance": conf_of.get((s, host(website.get(s, ""))), ""),
+            "page_contact": contact_of.get((s, host(website.get(s, ""))), ""),
             "facebook": facebook.get(s, ""),
             "instagram": instagram.get(s, ""),
             "linkedin": linkedin.get(s, ""),
@@ -435,9 +502,24 @@ def main() -> None:
     log.info(f"  email confiance: {dict(Counter(r['email_confiance'] for r in rows if r['email']))}")
     log.info(f"  addresses withheld as proven-invalid: {n_blocked}")
     log.info(f"  third-party addresses dropped (suppliers/aggregators): {n_third_party}")
+    if verdicts:
+        n_conf = Counter(r["site_confiance"] for r in rows if r["site_web"])
+        n_shop = sum(1 for r in rows if r["site_web"] in set(shop_of.values()))
+        log.info(f"  site validation (m2_s21): {len(verdicts)} (siret,domain) pairs "
+                 f"judged, {len(junk_domains)} domains junk for every row")
+        log.info(f"    site confiance: {dict(n_conf)}")
+        log.info(f"    shop-specific pages shipped instead of a chain home: {n_shop}")
+        log.info(f"    e-mails dropped (harvested from an unvalidated site): "
+                 f"{n_junk_site_email}")
+        log.info(f"    phones dropped (same reason): {n_junk_site_phone}")
+        log.info(f"  with a contact page URL   "
+                 f"{sum(1 for r in rows if r['page_contact']):>6}")
+    else:
+        log.warning("site_verdicts.csv absent — sites ship UNVALIDATED. "
+                    "Run scripts/m2_s21_validate_sites.py; H19/H21 will fail.")
     log.info(f"written -> {xlsx}")
     log.info(f"written -> {csv_path}")
-    log.info("Next: python scripts/m2_s15_check_v3.py --strict")
+    log.info("Next: python scripts/m2_s19_check_v5.py --version v7 --baseline v6 --strict")
 
 
 if __name__ == "__main__":

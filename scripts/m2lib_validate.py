@@ -248,10 +248,15 @@ def classify(*, reached: bool, text: str, own: str, shared: bool,
         was deleted as `reseau` in the first pilot despite proving its owner).
     """
     if not reached:
+        if not blocked:
+            return "mort", "unreachable"
         # A server that answered 403/503 is alive and refusing US. Recording
         # our own failure as a fact about the data is the agriculture
         # DNS-timeout bug, which cost 10,478 good addresses. Flag, never drop.
-        return ("non_verifiable", "blocked") if blocked else ("mort", "unreachable")
+        # But when the same unreadable domain is attached to several of our
+        # companies, our OWN data already says the attribution is unreliable,
+        # and that judgement needs no page at all.
+        return ("reseau", "blocked+shared") if shared else ("non_verifiable", "blocked")
     if is_parked(text):
         return "parked", "parking_page"
 
@@ -417,6 +422,9 @@ def selftest() -> int:
     check("blocked (403) -> non_verifiable, NOT mort",
           classify(reached=False, text="", own="none", shared=False,
                    blocked=True)[0], "non_verifiable")
+    check("blocked AND attached to several companies -> reseau",
+          classify(reached=False, text="", own="none", shared=True,
+                   blocked=True)[0], "reseau")
     check("connection dead -> mort",
           classify(reached=False, text="", own="none", shared=False)[0], "mort")
     # The CHAMADE/COULIN case: a real bakery site, just not ours.

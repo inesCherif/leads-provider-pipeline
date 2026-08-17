@@ -52,8 +52,8 @@ from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from m2_s9_emails import (SOCIAL_HOSTS, deep_urls, flush,  # noqa: E402
-                          load_done, name_tokens, norm, read_rows)
+from m2_s9_emails import (SOCIAL_HOSTS, flush, load_done,  # noqa: E402
+                          name_tokens, norm, read_rows)
 from m2lib_validate import (VERDICT_SHIPS, bakery_score,  # noqa: E402
                             classify, is_directory_like, ownership,
                             shop_page_candidates, strip_tags)
@@ -178,6 +178,55 @@ def load_shipped() -> dict:
     return counts
 
 
+def site_urls(sess, domain: str, cap: int = 300) -> list:
+    """Every same-domain URL the site advertises, unfiltered.
+
+    m2_s9's deep_urls() cannot be reused here: it keeps only contact-shaped
+    links (contact|mention|horaire|trouver…), and a chain's shop page is
+    named after the SHOP. Sam's own example,
+    /boulangerie-la-mie-de-pain-marseille/, matches none of those words, so
+    reusing deep_urls() silently guaranteed we would never find it.
+    """
+    urls, seen = [], set()
+
+    def add(u: str) -> None:
+        u = u.split("#")[0].split("?")[0].rstrip("/")
+        if u and u not in seen and len(urls) < cap:
+            seen.add(u)
+            urls.append(u)
+
+    for sm in (f"https://{domain}/sitemap.xml", f"https://{domain}/sitemap_index.xml"):
+        try:
+            resp = sess.get(sm, timeout=TIMEOUT)
+        except Exception:
+            continue
+        if resp.status_code != 200 or "<" not in resp.text:
+            continue
+        locs = re.findall(r"<loc>\s*([^<\s]+)\s*</loc>", resp.text, re.I)
+        # A sitemap index points at more sitemaps; follow one level.
+        for loc in locs[:20] if locs and locs[0].endswith(".xml") else []:
+            try:
+                sub = sess.get(loc, timeout=TIMEOUT)
+                if sub.status_code == 200:
+                    locs += re.findall(r"<loc>\s*([^<\s]+)\s*</loc>", sub.text, re.I)
+            except Exception:
+                continue
+        for loc in locs:
+            if domain in loc and not loc.endswith(".xml"):
+                add(loc)
+        break
+    try:
+        resp = sess.get(f"https://{domain}", timeout=TIMEOUT)
+        if resp.status_code == 200:
+            for href in re.findall(r'href=["\']([^"\']+)["\']', resp.text):
+                full = urllib.parse.urljoin(f"https://{domain}/", href)
+                if host_of(full) == domain:
+                    add(full)
+    except Exception:
+        pass
+    return urls
+
+
 def fetch(sess, url: str) -> tuple:
     """(html, answered). `answered` is True when a server replied at all —
     even 403. A host that refuses our user-agent is alive, and calling it
@@ -269,7 +318,7 @@ def main() -> None:
         # is shop-page-or-nothing, so the fetch happens here, once per domain.
         shop_urls: dict = {}
         if reached and shared:
-            candidates = deep_urls(sess, domain)
+            candidates = site_urls(sess, domain)
             budget = MAX_SHOP_FETCH
             for r in rows:
                 if budget <= 0:

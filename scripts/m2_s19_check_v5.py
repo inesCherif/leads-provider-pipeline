@@ -75,8 +75,11 @@ REQUIRED_NON_EMPTY = ["Raison sociale", "Adresse", "Ville"]
 #   Autres emails     — empty means nobody had a second address
 #   LinkedIn          — a neighbourhood bakery genuinely has no company page
 # Still printed when empty, so this exemption can never hide a data loss.
+#   Page contact      — most sites have no separate contact page to point at
 MAY_BE_EMPTY = {"Telephone surtaxe", "Autres emails", "LinkedIn",
-                "Telephone piste (non confirme)"}
+                "Telephone piste (non confirme)", "Page contact"}
+VERDICTS_PATH = PROJECT_ROOT / "exports" / "boulangerie" / "checkpoints" / "site_verdicts.csv"
+SHIPPABLE_VERDICTS = {"valide", "non_verifiable"}
 PHONE_FMT = re.compile(r"^0[1-9](?: \d{2}){4}$")
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -141,6 +144,14 @@ def main() -> None:
     ap.add_argument("--version", default="v5", help="version to gate (default v5)")
     ap.add_argument("--baseline", default="v4",
                     help="version it must not regress against (default v4)")
+    # A deliberate purge is not a regression — but its SIZE must be stated in
+    # advance and measured, never discovered afterwards. V5 hard-coded 500/60
+    # for its aggregator purge; V7 deletes far more sites (Sam's review), so
+    # the allowance is an argument instead of a fifth copy of this gate.
+    ap.add_argument("--site-drop-allow", type=int, default=500,
+                    help="max Site web values that may disappear vs baseline")
+    ap.add_argument("--email-drop-allow", type=int, default=60,
+                    help="max Email values that may disappear vs baseline")
     args = ap.parse_args()
     global XLSX_PATH, PREV_PATH
     XLSX_PATH = EXPORT_DIR / f"boulangerie_13_{args.version}.xlsx"
@@ -265,6 +276,66 @@ def main() -> None:
     hard(not bad_site, "H18 no Site web on an aggregator domain",
          f"{len(bad_site)} rows, e.g. {bad_site[:3]}")
 
+    # H19-H22 — site validation (m2_s21). Sam's V6 review found websites that
+    # are not the bakery's; these four make each failure mode un-reintroducible.
+    if VERDICTS_PATH.exists():
+        with VERDICTS_PATH.open(encoding="utf-8-sig", newline="") as fh:
+            vrows = list(csv.DictReader(fh, delimiter=";"))
+        verdict_of = {(r["siret"], r["domain"]): r["verdict"] for r in vrows}
+        junk_dom = {r["domain"] for r in vrows if r["verdict"] not in SHIPPABLE_VERDICTS}
+        junk_dom -= {r["domain"] for r in vrows if r["verdict"] in SHIPPABLE_VERDICTS}
+
+        def dom(u: str) -> str:
+            u = str(u or "").strip().lower()
+            u = re.sub(r"^https?://", "", u).split("/")[0]
+            return u.replace("www.", "")
+
+        # H19 — every shipped site was judged, and judged shippable. The V6
+        # defect was not only junk sites: 492 shipped rows had never been
+        # verified at all, which is why "unjudged" fails here too.
+        unjudged = [f'{r["SIRET"]}:{r["Site web"]}' for r in rows
+                    if str(r["Site web"]).strip()
+                    and (str(r["SIRET"]), dom(r["Site web"])) not in verdict_of]
+        bad_verdict = [f'{r["SIRET"]}:{r["Site web"]}={verdict_of[(str(r["SIRET"]), dom(r["Site web"]))]}'
+                       for r in rows if str(r["Site web"]).strip()
+                       and (str(r["SIRET"]), dom(r["Site web"])) in verdict_of
+                       and verdict_of[(str(r["SIRET"]), dom(r["Site web"]))] not in SHIPPABLE_VERDICTS]
+        hard(not unjudged and not bad_verdict,
+             "H19 every shipped Site web passed m2_s21 validation",
+             f"{len(unjudged)} unjudged e.g. {unjudged[:2]}; "
+             f"{len(bad_verdict)} junk e.g. {bad_verdict[:2]}")
+
+        # H20 — mapquest.com shipped info@mapquest.com as a lead's e-mail in
+        # V6: a real mailbox at a company that is not our prospect.
+        bad_mail = [f'{r["SIRET"]}:{r["Email"]}' for r in rows
+                    if str(r["Email"]).strip()
+                    and str(r["Email"]).partition("@")[2].lower() in junk_dom]
+        hard(not bad_mail, "H20 no Email on a domain judged junk for every row",
+             f"{len(bad_mail)} rows, e.g. {bad_mail[:3]}")
+
+        # H21 — the export must be newer than the verdicts it claims to apply,
+        # the same race H17 guards for verification.
+        hard(XLSX_PATH.stat().st_mtime >= VERDICTS_PATH.stat().st_mtime,
+             "H21 export built AFTER site validation finished",
+             f"{XLSX_PATH.name} is older than {VERDICTS_PATH.name} — rebuild the export")
+
+        # H22 — lamiedepain-boulangerie.fr shipped identically on 7 SIRETs, 5 of
+        # them other companies. Keyed on SIREN like the switchboard guard, so a
+        # real multi-établissement company keeping one site is untouched, and a
+        # shop-specific URL differs per row and passes.
+        by_url: dict = {}
+        for r in rows:
+            u = str(r["Site web"]).strip().lower().rstrip("/")
+            if u:
+                by_url.setdefault(u, set()).add(str(r["SIREN"]))
+        shared_urls = {u: s for u, s in by_url.items() if len(s) > 1}
+        hard(not shared_urls, "H22 no identical Site web across several SIREN",
+             f"{len(shared_urls)} URLs, e.g. "
+             f"{[(u, len(s)) for u, s in sorted(shared_urls.items(), key=lambda kv: -len(kv[1]))[:3]]}")
+    else:
+        hard(False, "H19 site validation ran",
+             f"{VERDICTS_PATH.name} missing — run scripts/m2_s21_validate_sites.py first")
+
     # H12 — no regression. An enrichment that loses data is a bug.
     n_ph = len(phoned)
     n_em = sum(1 for r in rows if str(r["Email"]).strip())
@@ -283,16 +354,18 @@ def main() -> None:
         # 333 shipped addresses were aggregator-domain junk (55) or proven
         # invalid (1) — measured 2026-08-13, 0 unexplained losses. Anything
         # beyond that still fails hard.
-        if n_em < p_em - 60:
-            regress.append(f"emails {p_em} -> {n_em} (beyond the 56 measured junk)")
+        if n_em < p_em - args.email_drop_allow:
+            regress.append(f"emails {p_em} -> {n_em} "
+                           f"(beyond the {args.email_drop_allow} allowed)")
         elif n_em < p_em:
             log.info(f"        (emails {p_em} -> {n_em}: expected — 55 aggregator "
                      "addresses and 1 proven-invalid were removed deliberately)")
         # Site count MAY legitimately fall in V5: the aggregator purge removed
         # junk "sites" like myboulange.fr sold as 97 bakeries' own pages. A
         # drop is reported, and anything beyond the purge's size still fails.
-        if n_web < p_web - 500:
-            regress.append(f"sites {p_web} -> {n_web} (beyond the ~462 purged)")
+        if n_web < p_web - args.site_drop_allow:
+            regress.append(f"sites {p_web} -> {n_web} "
+                           f"(beyond the {args.site_drop_allow} allowed)")
         elif n_web < p_web:
             log.info(f"        (sites {p_web} -> {n_web}: expected — junk "
                      "aggregator sites were purged deliberately)")
