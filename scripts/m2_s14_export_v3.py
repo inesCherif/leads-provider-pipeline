@@ -83,7 +83,7 @@ from m2lib_contact import (normalize_fr_phone, is_surtaxe,  # noqa: E402
                            is_third_party_email, clean_social_url)
 from m2_s8_websites import AGGREGATORS                  # noqa: E402
 from m2lib_validate import (VERDICT_SHIPS, email_recoverable,  # noqa: E402
-                            site_confiance)
+                            email_belongs_to, site_confiance)
 
 
 def host(url: str) -> str:
@@ -329,10 +329,33 @@ def main() -> None:
     # SMTP-PROVEN generated addresses (m2_s10). These are the only guessed
     # addresses that ship, and only because a mail server accepted them; a
     # catch-all domain's 250 proves nothing and never reaches this file.
+    # A generated address had to clear ONE test to get here: a mail server
+    # answered. That proves the mailbox exists — never whose it is. The
+    # crawled-address path proves ownership twice over (is_third_party_email,
+    # then site validation); this path proved it not at all, and it showed:
+    # V10 shipped `contact@saint-chamas.com` (the COMMUNE's mailbox) as a
+    # bakery's address, `info@leguichetdesformalites.fr` (an admin service)
+    # and `contact@e-pro.fr` (a directory) likewise, with `info@mapquest.com`
+    # and `contact@doctrine.fr` one probe behind them. That is the V6 mairie
+    # defect and CLAUDE.md's "never pattern-expand an aggregator", arriving
+    # by the one route that had no gate on it.
+    #
+    # So a guessed address ships only where our claim on the DOMAIN is
+    # already proven — the same two proofs used everywhere else in this file.
+    names_of = {b["siret"]: (b.get("raison_sociale", ""), b.get("enseigne", ""))
+                for b in base}
+    n_pattern_disowned = 0
     for r in read("pattern_candidates.csv"):
         if r.get("status") != "valid":
             continue
         s, e = r["siret"], r["candidate"].lower()
+        dom_p = e.partition("@")[2]
+        owned = (site_ok(s, "https://" + dom_p)
+                 or email_belongs_to(e, *names_of.get(s, (r.get("raison_sociale", ""),))))
+        shared = len(domain_sirens.get(dom_p, ())) > 1
+        if not owned or shared or dom_p in junk_domains:
+            n_pattern_disowned += 1
+            continue
         cand[s].append((RANK[("confirme", "valide")], e, "valide",
                         "pattern/verifie", "pattern"))
         srcs[s].add("pattern")
@@ -616,6 +639,8 @@ def main() -> None:
     log.info(f"  email verdicts: {dict(Counter(r['email_statut'] for r in rows if r['email']))}")
     log.info(f"  email confiance: {dict(Counter(r['email_confiance'] for r in rows if r['email']))}")
     log.info(f"  addresses withheld as proven-invalid: {n_blocked}")
+    log.info(f"  GENERATED addresses dropped as not ours (domain unproven, "
+             f"shared or junk): {n_pattern_disowned}")
     log.info(f"  third-party addresses dropped (suppliers/aggregators): {n_third_party}")
     if verdicts:
         n_conf = Counter(r["site_confiance"] for r in rows if r["site_web"])

@@ -61,6 +61,7 @@ PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
 from m2lib_contact import is_surtaxe                       # noqa: E402
 from m2_s8_websites import AGGREGATORS                     # noqa: E402
+from m2lib_validate import VERDICT_SHIPS, email_belongs_to  # noqa: E402
 
 EXPORT_DIR = PROJECT_ROOT / "exports" / "boulangerie"
 # Defaults gate V5 against V4; --version/--baseline retarget the SAME checks at
@@ -69,6 +70,7 @@ EXPORT_DIR = PROJECT_ROOT / "exports" / "boulangerie"
 XLSX_PATH = EXPORT_DIR / "boulangerie_13_v5.xlsx"
 PREV_PATH = EXPORT_DIR / "boulangerie_13_v4.xlsx"
 VERIFIED_PATH = PROJECT_ROOT / "exports" / "boulangerie" / "checkpoints" / "verified_emails.csv"
+VERDICTS_PATH = PROJECT_ROOT / "exports" / "boulangerie" / "checkpoints" / "site_verdicts.csv"
 
 NAF_SCOPE = {"10.71C", "10.71B", "10.71D"}
 COUNT_BAND = (1000, 2400)
@@ -385,6 +387,51 @@ def main() -> None:
     hard(not soc_shared, "H24 no identical social URL across several SIREN",
          f"{len(soc_shared)} URLs, e.g. "
          f"{[(u[:50], len(s)) for u, s in sorted(soc_shared.items(), key=lambda kv: -len(kv[1]))[:3]]}")
+
+    # H25 — a GENERATED address must live on a domain we can PROVE is the
+    # business's. A guessed address cleared exactly one test: a mail server
+    # answered. That says the mailbox exists, never whose it is. V10 shipped
+    # `contact@saint-chamas.com` — the TOWN HALL's mailbox — as a bakery's
+    # address, plus an admin service and a directory, with info@mapquest.com
+    # and contact@doctrine.fr (8 of our SIREN) one probe behind. Sharedness
+    # does NOT catch these: each shipped on a single row. The discriminator
+    # is ownership, so this re-derives the export's own two proofs from the
+    # checkpoints. Run against V10 it fails on 5 rows, which is what proves it.
+    ships: set = set()
+    siren_of = {str(r["SIRET"]): str(r["SIREN"]) for r in rows}
+    dom_sirens: dict = {}
+    if VERDICTS_PATH.exists():
+        with VERDICTS_PATH.open(encoding="utf-8-sig", newline="") as fh:
+            for v in csv.DictReader(fh, delimiter=";"):
+                if v.get("verdict") in VERDICT_SHIPS:
+                    ships.add((v["siret"], v["domain"]))
+                dom_sirens.setdefault(v["domain"], set()).add(
+                    siren_of.get(v["siret"], v["siret"]))
+    disowned = []
+    for r in rows:
+        if "pattern" not in str(r.get("Email confiance") or ""):
+            continue
+        email = str(r["Email"] or "").lower()
+        dom = email.partition("@")[2]
+        if not dom:
+            continue
+        # Sharedness is checked FIRST and is fatal on its own: a domain
+        # several of our companies sit on identifies none of them, however
+        # well its name matches one. This is the half that catches the town
+        # hall (saint-chamas.com, 2 SIREN) — the ownership test alone lets
+        # it through.
+        if len(dom_sirens.get(dom, ())) > 1:
+            disowned.append((email, str(r.get("Raison sociale") or "")[:24]))
+            continue
+        if (str(r["SIRET"]), dom) in ships:
+            continue
+        if email_belongs_to(email, str(r.get("Raison sociale") or ""),
+                            str(r.get("Enseigne") or "")):
+            continue
+        disowned.append((email, str(r.get("Raison sociale") or "")[:24]))
+    hard(not disowned,
+         "H25 every generated address sits on a domain proven to be the business's",
+         f"{len(disowned)} disowned, e.g. {disowned[:4]}")
 
     # H12 — no regression. An enrichment that loses data is a bug.
     n_ph = len(phoned)
