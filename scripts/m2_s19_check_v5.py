@@ -232,7 +232,10 @@ def main() -> None:
     hard(not nosrc, "H11 every phone states its source",
          f"{len(nosrc)} without provenance, e.g. {nosrc[:3]}")
     # A search-snippet phone alone must never reach the dialled column.
-    UNTRUSTED = {"snippet", "site/faible"}
+    # `google_panel` (m2_s23) joins them until its agreement with OSM/Maps is
+    # measured, the way pagesjaunes earned its rank at 83.4%. Until then a
+    # panel number ships only when a second source names it too.
+    UNTRUSTED = {"snippet", "site/faible", "google_panel"}
     leaked = [str(r["SIRET"]) for r in phoned
               if str(r["Telephone source"]).strip() in UNTRUSTED]
     hard(not leaked, "H13 no untrusted source in the dialled Telephone column",

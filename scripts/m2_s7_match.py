@@ -56,6 +56,11 @@ SOURCES = [
     ("osm_listings.csv",    "osm"),
     ("pj_listings.csv",     "pagesjaunes"),
     ("places_listings.csv", "serper_places"),   # m2_s13 Google Maps sweep
+    # m2_s23 Google Business panels. Anchored on one of our addresses, but
+    # judged here like every other listing: a named query once returned an
+    # electronics retailer for a bakery, so the panel's own printed address
+    # is what has to agree, never the question we asked.
+    ("google_panel_listings.csv", "google_panel"),
 ]
 
 GEO_STRICT_M = 40.0    # same point, names may differ (rename/rebrand)
