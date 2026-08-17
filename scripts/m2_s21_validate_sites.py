@@ -360,7 +360,14 @@ def main() -> None:
                         cps=[r["code_postal"]],
                         tokens=name_tokens(f"{r['raison_sociale']} {r['hint']}"),
                         phones=phones_of.get(r["siret"], ()))
-                    if own_here != "none" and bakery_score(shop_text) >= 1:
+                    # `cp` alone is CIRCULAR here: we selected this URL because
+                    # it carries the commune or postcode, so finding the
+                    # postcode on it proves nothing. Three different bakeries
+                    # in Gardanne all claimed the same Pétrin Ribeïrou shop
+                    # page that way. The name or a harder identifier must
+                    # agree as well.
+                    if own_here in ("siret", "siren", "tel", "cp+nom") \
+                            and bakery_score(shop_text) >= 1:
                         shop_urls[r["siret"]] = (cand, own_here)
                         stats["shop_page_found"] += 1
 

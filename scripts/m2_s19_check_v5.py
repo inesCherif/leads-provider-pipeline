@@ -152,6 +152,9 @@ def main() -> None:
                     help="max Site web values that may disappear vs baseline")
     ap.add_argument("--email-drop-allow", type=int, default=60,
                     help="max Email values that may disappear vs baseline")
+    ap.add_argument("--phone-drop-allow", type=int, default=0,
+                    help="max Telephone values that may disappear vs baseline; "
+                         "a site that fails validation takes its phone with it")
     args = ap.parse_args()
     global XLSX_PATH, PREV_PATH
     XLSX_PATH = EXPORT_DIR / f"boulangerie_13_{args.version}.xlsx"
@@ -348,8 +351,12 @@ def main() -> None:
         regress = []
         if n < len(prev):
             regress.append(f"rows {len(prev)} -> {n}")
-        if n_ph < p_ph:
-            regress.append(f"phones {p_ph} -> {n_ph}")
+        if n_ph < p_ph - args.phone_drop_allow:
+            regress.append(f"phones {p_ph} -> {n_ph} "
+                           f"(beyond the {args.phone_drop_allow} allowed)")
+        elif n_ph < p_ph:
+            log.info(f"        (phones {p_ph} -> {n_ph}: within the declared "
+                     f"allowance — numbers read off sites that failed validation)")
         # Emails MAY drop by up to the measured V4 contamination: 56 of V4's
         # 333 shipped addresses were aggregator-domain junk (55) or proven
         # invalid (1) — measured 2026-08-13, 0 unexplained losses. Anything

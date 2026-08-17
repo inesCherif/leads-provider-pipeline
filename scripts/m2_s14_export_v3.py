@@ -440,6 +440,33 @@ def main() -> None:
         log.info(f"switchboard guard: {len(switchboards)} number(s) claimed by "
                  f">2 companies dropped, e.g. {sorted(switchboards)[:3]}")
 
+    # SHARED-URL GUARD, the switchboard guard applied to websites. A shop page
+    # that several of our companies claim identifies none of them: three
+    # bakeries in Gardanne all matched the same Pétrin Ribeïrou boutique page,
+    # and three more the same Eguilles site. m2_s7's rule for listings is that
+    # ambiguity is REJECTION, not a coin toss, and the same holds here. Keyed
+    # on SIREN, so one company's several établissements may share their site.
+    siren_of_siret = {b["siret"]: b["siren"] for b in base}
+    url_sirens: dict = defaultdict(set)
+    for s, u in website.items():
+        url_sirens[u.rstrip("/").lower()].add(siren_of_siret.get(s, s))
+    ambiguous_urls = {u for u, sr in url_sirens.items() if len(sr) > 1}
+    if ambiguous_urls:
+        website = {s: u for s, u in website.items()
+                   if u.rstrip("/").lower() not in ambiguous_urls}
+        log.info(f"shared-URL guard: {len(ambiguous_urls)} URL(s) claimed by >1 "
+                 f"company dropped, e.g. {sorted(ambiguous_urls)[:2]}")
+
+    # A junk domain's own mailbox is never a prospect's address, whichever
+    # route it arrived by. The site loop already refuses them; this catches
+    # the ones that come from a Maps listing or a generated pattern instead —
+    # info@mapquest.com reached V6 that way, and V7's first build too.
+    n_junk_mail = 0
+    for s in list(cand):
+        keep = [c for c in cand[s] if c[1].partition("@")[2] not in junk_domains]
+        n_junk_mail += len(cand[s]) - len(keep)
+        cand[s] = keep
+
     n_blocked = 0
     rows = []
     for b in base:
@@ -519,7 +546,7 @@ def main() -> None:
         log.info(f"    site confiance: {dict(n_conf)}")
         log.info(f"    shop-specific pages shipped instead of a chain home: {n_shop}")
         log.info(f"    e-mails dropped (harvested from an unvalidated site): "
-                 f"{n_junk_site_email}")
+                 f"{n_junk_site_email} + {n_junk_mail} on a junk domain by another route")
         log.info(f"    phones dropped (same reason): {n_junk_site_phone}")
         log.info(f"  with a contact page URL   "
                  f"{sum(1 for r in rows if r['page_contact']):>6}")
