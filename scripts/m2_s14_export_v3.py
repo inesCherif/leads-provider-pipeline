@@ -332,6 +332,15 @@ def main() -> None:
         conf = r.get("confiance") or "faible"
         cand[s].append((RANK.get((conf, v), 9), e, v, conf, "site"))
         srcs[s].add("site")
+        # Sam asked for "les urls des pages contact". m2_s21 records the one it
+        # reached at /contact, but plenty of small sites (the eatbu template in
+        # his own example) put their details at a #contact anchor on the home
+        # page. found_on is where the address ACTUALLY was, so it fills the gap
+        # whenever it points somewhere more specific than the bare domain.
+        fo = r.get("found_on", "")
+        key = (s, r.get("domain", ""))
+        if fo and key not in contact_of and urllib.parse.urlparse(fo).path.strip("/"):
+            contact_of[key] = fo
         if r.get("domain") and s not in website and site_ok(s, "https://" + r["domain"]):
             website[s] = shop_of.get((s, r["domain"]), "https://" + r["domain"])
 

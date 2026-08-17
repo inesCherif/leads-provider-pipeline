@@ -300,11 +300,17 @@ def main() -> None:
         shared = len({r["siren"] for r in rows if r["siren"]}) > 1
 
         html_all, contact_url, reached, answered = "", "", False, False
-        for sub in PAGES:
+        for n_page, sub in enumerate(PAGES):
             url = f"https://{domain}{sub}"
             html, ans = fetch(sess, url)
             answered = answered or ans
             time.sleep(DELAY)
+            # No TCP answer at all on the home page: /contact and
+            # /mentions-legales live on the same dead host, so trying them
+            # only buys two more 12-second timeouts. Measured: dead domains
+            # were costing 36s each and dominated the run.
+            if n_page == 0 and not ans:
+                break
             if not html:
                 continue
             reached = True
