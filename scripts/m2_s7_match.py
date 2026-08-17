@@ -107,6 +107,62 @@ def name_score(nm: set, r: dict) -> float:
     return best
 
 
+# ------------------------------------------------------------- addresses ----
+# Pages Jaunes carries no lat/lon, so a PJ listing can only ever be matched by
+# name — and PJ prints the TRADE name while the registry holds the LEGAL one.
+# That is why 391 of its 816 listings (every one of them carrying a phone) went
+# unmatched. The address is the location proof PJ does have: it prints
+# "18 cours Joseph Thierry 13001 Marseille" against our "18 COURS JOSEPH
+# THIERRY 13001 MARSEILLE". Sam asked for exactly this in his V8 review.
+#
+# The two spellings differ in ways a human reads through instantly: case,
+# accents, and the way-type abbreviation (CRS/BD/AV). Everything below exists
+# to make those differences not matter, while keeping the house number exact —
+# n°18 and n°180 are different shops, so the number is never fuzzy.
+WAY_TYPES = {
+    "AV": "AVENUE", "AVE": "AVENUE", "AVN": "AVENUE",
+    "BD": "BOULEVARD", "BLD": "BOULEVARD", "BLVD": "BOULEVARD", "BOUL": "BOULEVARD",
+    "CRS": "COURS", "CHE": "CHEMIN", "CHEM": "CHEMIN", "CH": "CHEMIN",
+    "PL": "PLACE", "RTE": "ROUTE", "IMP": "IMPASSE", "ALL": "ALLEE",
+    "TRA": "TRAVERSE", "TRAV": "TRAVERSE", "SQ": "SQUARE", "QU": "QUAI",
+    "MTE": "MONTEE", "PAS": "PASSAGE", "RES": "RESIDENCE", "LOT": "LOTISSEMENT",
+    "ST": "SAINT", "STE": "SAINTE", "R": "RUE", "VOIE": "VOIE",
+}
+
+# "bis", "ter" and a lone letter after the number are building qualifiers, not
+# street identity: "3 B boulevard Flammarion" and "3 boulevard Flammarion" are
+# the same address written by two publishers.
+ADDR_NOISE = {"BIS", "TER", "QUATER"}
+
+
+def addr_parse(raw: str) -> tuple:
+    """('18', {'cours','joseph','thierry'}) — house number + street tokens.
+
+    Returns ("", set()) when there is no leading house number: without it the
+    only evidence left is the street name, and a street holds many shops.
+    """
+    s = re.sub(r"\b\d{5}\b.*$", " ", raw or "")     # drop the "13001 MARSEILLE" tail
+    s = norm(s)
+    if not s:
+        return "", set()
+    parts = s.split()
+    m = re.match(r"^(\d+)", parts[0])
+    if not m:
+        return "", set()
+    house = m.group(1)
+    out = set()
+    for t in parts[1:]:
+        if t.isdigit() or t in ADDR_NOISE:
+            continue
+        t = WAY_TYPES.get(t, t)
+        # A lone initial ("H D ESTIENNE D ORVES" for Henri d'Estienne d'Orves)
+        # is spelled out by one publisher and abbreviated by the other, so it
+        # can only add noise to the comparison.
+        if len(t) > 1:
+            out.add(t.lower())
+    return house, out
+
+
 def haversine_m(lat1, lon1, lat2, lon2) -> float:
     R = 6371000.0
     p1, p2 = math.radians(lat1), math.radians(lat2)
@@ -169,6 +225,7 @@ def main() -> None:
         r["_tok_alt"] = [tk for tk in (tokens(r["raison_sociale"]),
                                        tokens(r["enseigne"])) if tk]
         r["_lat"], r["_lon"] = fnum(r["latitude"]), fnum(r["longitude"])
+        r["_house"], r["_street"] = addr_parse(r.get("adresse", ""))
         by_commune[norm(r["commune"])].append(r)
         by_cp[r["code_postal"]].append(r)
 
@@ -176,7 +233,8 @@ def main() -> None:
     rejects = Counter()
     method_counts = Counter()
     METHOD_RANK = {"siret_exact": 0, "geo_only": 1, "geo_name": 2,
-                   "name_commune": 3, "name_fuzzy": 4}
+                   "addr_street": 3, "name_commune": 4, "name_fuzzy": 5}
+    ADDR_MIN = 0.6           # street-token overlap once the number is equal
 
     for L in listings:
         src = L["_source"]
@@ -232,6 +290,32 @@ def main() -> None:
                     elif len(very_near) > 1:
                         rejects["ambiguous: 2+ companies within 40 m"] += 1
                         continue
+
+        # 4. STREET ADDRESS. Ranked above the name rungs because a street
+        # number is a stronger claim than a name: two shops can share a name
+        # across a city, but only one business occupies 18 cours Joseph
+        # Thierry. Deliberately NO name test here — the whole reason this rung
+        # exists is that PJ's trade name and the registry's legal name differ.
+        #
+        # The CP pool is mandatory, not a fallback: street names repeat across
+        # communes (every town has a rue de la République), so without it "18
+        # rue de la République" would match a dozen towns at once.
+        addr_raw = (L.get("address") or L.get("adresse") or "").strip()
+        if cand is None and addr_raw and cp:
+            l_house, l_street = addr_parse(addr_raw)
+            if l_house and l_street:
+                hits = [r for r in by_cp.get(cp, [])
+                        if r["_house"] == l_house
+                        and ratio(l_street, r["_street"]) >= ADDR_MIN]
+                sirets = {r["siret"] for r in hits}
+                if len(sirets) == 1:
+                    cand = ("addr_street", hits[0]["siret"], None)
+                elif len(sirets) > 1:
+                    # Several of our companies registered at one address: a
+                    # successor business, or two shops in one building. Which
+                    # one owns this phone is exactly what we cannot tell.
+                    rejects["ambiguous: 2+ companies at the same address"] += 1
+                    continue
 
         # 4/5. Name, but ONLY with location agreement.
         if cand is None and name:
