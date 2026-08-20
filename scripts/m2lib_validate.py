@@ -262,7 +262,17 @@ def email_belongs_to(email: str, *names) -> bool:
     for n in names:
         tokens |= {t.lower() for t in norm(n).split()
                    if len(t) > 3 and t not in GENERIC_NAME_WORDS}
-    return any(t in l or t in d for t in tokens)
+    if any(t in l or t in d for t in tokens):
+        return True
+    # A name made only of short words (AU BEC FIN) has no token >3 letters to
+    # find, yet info@becfin.fr plainly names it. Second test: the WHOLE
+    # mailbox-domain core contained in the name's non-generic core — this
+    # direction only, because the reverse (a short name buried inside a long
+    # unrelated domain) is the coverage trap domain_matches_name() guards.
+    ncore = re.sub(r"[^a-z0-9]", "", "".join(
+        t.lower() for n in names for t in norm(n).split()
+        if t not in GENERIC_NAME_WORDS))
+    return len(d) >= 6 and d in ncore
 
 
 # Verdicts under which an address found on the page may still be the shop's
@@ -309,10 +319,18 @@ def email_recoverable(email: str, *, verdict: str, crawled_domain: str,
     local, _, dom = (email or "").lower().partition("@")
     if not local or not dom:
         return ""
-    if verdict not in VERDICT_MAY_STILL_HOLD_EMAIL:
-        return ""
+    # `nom` outranks the page verdict itself (widened 2026-08-20, measured:
+    # exactly 2 addresses were dying on it — info@becfin.fr for AU BEC FIN
+    # and contact@le-champ-du-pain.fr for LE CHAMP DU PAIN, both harvested
+    # off a page judged `hors_sujet`). An address that NAMES the business
+    # identifies the row whatever the page around it was; a hors_sujet or
+    # dead page changes where it was printed, not whose name it carries.
+    # `boite` and `domaine` still require an eligible verdict: a free
+    # mailbox on somebody else's page is somebody else's mailbox.
     if email_belongs_to(email, *names):
         return "nom"
+    if verdict not in VERDICT_MAY_STILL_HOLD_EMAIL:
+        return ""
     if dom in FREE_MAIL:
         return "boite"
     # `domaine` must NOT apply to a directory. On an `annuaire` page the
@@ -658,12 +676,22 @@ def selftest() -> int:
     check("mapquest stays dead",
           R("info@mapquest.com", verdict="annuaire", crawled_domain="mapquest.com",
             domain_shared=False), "")
-    # A page about something else has no reason to print our prospect's address.
-    check("hors_sujet recovers nothing",
+    # A page about something else has no reason to print our prospect's
+    # address — UNLESS the address itself names the business (2026-08-20:
+    # info@becfin.fr for AU BEC FIN died on a hors_sujet page; the page was
+    # wrong, the name in the mailbox was not).
+    check("hors_sujet recovers nothing without name evidence",
           R("contact@marius.fr", verdict="hors_sujet", crawled_domain="marius.fr",
             domain_shared=False), "")
-    check("mort recovers nothing",
+    check("...but a named address survives even hors_sujet",
+          R("info@becfin.fr", verdict="hors_sujet", crawled_domain="stranger.fr",
+            domain_shared=False, names=("AU BEC FIN",)), "nom")
+    check("mort recovers nothing without name evidence",
           R("x@gmail.com", verdict="mort", crawled_domain="marius.fr",
+            domain_shared=False), "")
+    check("free mailbox does NOT survive hors_sujet (boite needs an "
+          "eligible verdict)",
+          R("someone@gmail.com", verdict="hors_sujet", crawled_domain="blog.fr",
             domain_shared=False), "")
     check("supplier on a directory page is not recovered by `domaine`",
           R("contact@pavailler.com", verdict="annuaire", crawled_domain="marius.fr",
