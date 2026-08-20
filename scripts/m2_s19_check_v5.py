@@ -73,6 +73,7 @@ VERIFIED_PATH = PROJECT_ROOT / "exports" / "boulangerie" / "checkpoints" / "veri
 VERDICTS_PATH = PROJECT_ROOT / "exports" / "boulangerie" / "checkpoints" / "site_verdicts.csv"
 MATCHED_PATH = PROJECT_ROOT / "exports" / "boulangerie" / "checkpoints" / "matched.csv"
 ETABS_PATH = PROJECT_ROOT / "exports" / "boulangerie" / "checkpoints" / "etablissements.csv"
+RDAP_PATH = PROJECT_ROOT / "exports" / "boulangerie" / "checkpoints" / "rdap_emails.csv"
 
 NAF_SCOPE = {"10.71C", "10.71B", "10.71D"}
 COUNT_BAND = (1000, 2400)
@@ -482,6 +483,22 @@ def main() -> None:
         hard(not bad_tb,
              f"H27 every addr_tiebreak award ({len(awards)}) is audited and truly the newest sibling",
              f"{len(bad_tb)} bad, e.g. {bad_tb[:3]}")
+
+    # H28 — an RDAP address ships only from the m2_s24 checkpoint, meaning it
+    # passed the harvester's ownership rules (registrant name matches the
+    # business, or the mailbox is on its own domain; proxies and agency
+    # registrants refused). An `rdap/...` confiance with no checkpoint row
+    # behind it would be exactly the tech@ovh.net leak its pilot caught.
+    rdap_ok = set()
+    if RDAP_PATH.exists():
+        with RDAP_PATH.open(encoding="utf-8-sig", newline="") as fh:
+            rdap_ok = {(r["siret"], (r["email"] or "").lower())
+                       for r in csv.DictReader(fh, delimiter=";")}
+    bad_rdap = [f'{r["SIRET"]}:{r["Email"]}' for r in rows
+                if str(r.get("Email confiance") or "").startswith("rdap")
+                and (str(r["SIRET"]), str(r["Email"]).lower()) not in rdap_ok]
+    hard(not bad_rdap, "H28 every RDAP e-mail traces to the m2_s24 checkpoint",
+         f"{len(bad_rdap)} untraceable, e.g. {bad_rdap[:3]}")
 
     # H12 — no regression. An enrichment that loses data is a bug.
     n_ph = len(phoned)

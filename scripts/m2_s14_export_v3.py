@@ -376,6 +376,23 @@ def main() -> None:
                         "pattern/verifie", "pattern"))
         srcs[s].add("pattern")
 
+    # REGISTRANT addresses from AFNIC RDAP (m2_s24). Ownership was decided in
+    # the harvester — registrant name matches the business, or the mailbox
+    # sits on the business's own validated domain; proxies and agency/hoster
+    # registrants are refused there (its pilot caught tech@ovh.net shipping).
+    n_rdap = 0
+    for r in read("rdap_emails.csv"):
+        s = r["siret"]
+        e = (r.get("email") or "").strip().lower()
+        if not e or s not in siren_by_siret:
+            continue
+        v = verified.get(e, "non verifie")
+        conf = "confirme" if r.get("pair_verdict") == "valide" else "faible"
+        cand[s].append((RANK.get((conf, v), 9), e, v,
+                        f"rdap/{r.get('evidence', '')}", "rdap"))
+        srcs[s].add("rdap")
+        n_rdap += 1
+
     n_third_party = n_junk_site_email = n_named_recovered = 0
     n_recovered_why: Counter = Counter()
     for r in site_emails:
