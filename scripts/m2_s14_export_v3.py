@@ -406,6 +406,22 @@ def main() -> None:
         srcs[s].add("rdap")
         n_rdap += 1
 
+    # Mentions-légales addresses (m2_s26). Evidence was decided there: name
+    # match (commune tokens excluded — the Venelles-association trap), a
+    # sister spelling of the site's own domain, or a consumer mailbox on a
+    # page m2_s21 proved the business's own.
+    n_legal = 0
+    for r in read("legal_emails.csv"):
+        s = r["siret"]
+        e = (r.get("email") or "").strip().lower()
+        if not e or s not in siren_by_siret:
+            continue
+        v = verified.get(e, "non verifie")
+        cand[s].append((RANK.get(("faible", v), 9), e, v,
+                        f"legal/{r.get('evidence', '')}", "legal"))
+        srcs[s].add("legal")
+        n_legal += 1
+
     n_third_party = n_junk_site_email = n_named_recovered = 0
     n_recovered_why: Counter = Counter()
     for r in site_emails:

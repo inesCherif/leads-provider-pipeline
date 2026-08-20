@@ -60,7 +60,8 @@ def collect_emails() -> dict[str, set]:
     out: dict[str, set] = {}
     for fname, col in (("site_emails.csv", "email"), ("matched.csv", "email"),
                        ("social_emails.csv", "email"),
-                       ("rdap_emails.csv", "email")):
+                       ("rdap_emails.csv", "email"),
+                       ("legal_emails.csv", "email")):
         p = CHECK_DIR / fname
         if not p.exists():
             continue

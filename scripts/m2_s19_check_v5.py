@@ -74,6 +74,7 @@ VERDICTS_PATH = PROJECT_ROOT / "exports" / "boulangerie" / "checkpoints" / "site
 MATCHED_PATH = PROJECT_ROOT / "exports" / "boulangerie" / "checkpoints" / "matched.csv"
 ETABS_PATH = PROJECT_ROOT / "exports" / "boulangerie" / "checkpoints" / "etablissements.csv"
 RDAP_PATH = PROJECT_ROOT / "exports" / "boulangerie" / "checkpoints" / "rdap_emails.csv"
+LEGAL_PATH = PROJECT_ROOT / "exports" / "boulangerie" / "checkpoints" / "legal_emails.csv"
 
 NAF_SCOPE = {"10.71C", "10.71B", "10.71D"}
 COUNT_BAND = (1000, 2400)
@@ -499,6 +500,20 @@ def main() -> None:
                 and (str(r["SIRET"]), str(r["Email"]).lower()) not in rdap_ok]
     hard(not bad_rdap, "H28 every RDAP e-mail traces to the m2_s24 checkpoint",
          f"{len(bad_rdap)} untraceable, e.g. {bad_rdap[:3]}")
+
+    # H29 — same trace rule for mentions-légales addresses (m2_s26): the
+    # confiance label claims evidence, so the checkpoint row carrying that
+    # evidence must exist for the same siret.
+    legal_ok = set()
+    if LEGAL_PATH.exists():
+        with LEGAL_PATH.open(encoding="utf-8-sig", newline="") as fh:
+            legal_ok = {(r["siret"], (r["email"] or "").lower())
+                        for r in csv.DictReader(fh, delimiter=";")}
+    bad_legal = [f'{r["SIRET"]}:{r["Email"]}' for r in rows
+                 if str(r.get("Email confiance") or "").startswith("legal")
+                 and (str(r["SIRET"]), str(r["Email"]).lower()) not in legal_ok]
+    hard(not bad_legal, "H29 every mentions-légales e-mail traces to the m2_s26 checkpoint",
+         f"{len(bad_legal)} untraceable, e.g. {bad_legal[:3]}")
 
     # H12 — no regression. An enrichment that loses data is a bug.
     n_ph = len(phoned)
