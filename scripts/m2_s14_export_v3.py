@@ -35,7 +35,7 @@ Rules carried over from agriculture and V2, all bought with incidents:
 
 Phone precedence — set by MEASUREMENT, not by intuition (2026-08-13):
 
-    osm > serper_places > pagesjaunes > site/confirme
+    osm > serper_places > pagesjaunes > bcontact > site/confirme
         > corrobore(...) > google_panel > social_fb
 
   OSM and Google Maps agree with each other on 45 of the 47 businesses both
@@ -164,12 +164,17 @@ RANK = {("confirme", "valide"): 0, ("confirme", "non verifie"): 1,
 # They sit BELOW every measured source and below corroboration: the panel
 # measured 79.3% against trusted sources and Facebook was never measured, so
 # they only ever fill a row no better source can — never displace one.
-PHONE_RANK = {"osm": 0, "serper_places": 1, "pagesjaunes": 2,
-              "site/confirme": 3, "google_panel": 5, "social_fb": 6}
+#
+# `bcontact` (boulangerie.contact, m2_s25) EARNED its rank on 2026-08-20 the
+# way pagesjaunes earned 83.4%: measured 84.0% against pagesjaunes (213
+# overlaps) and 88.9% against OSM (45) — its 95-96% against serper_places is
+# discounted as same-upstream (both are Google Maps data).
+PHONE_RANK = {"osm": 0, "serper_places": 1, "pagesjaunes": 2, "bcontact": 3,
+              "site/confirme": 4, "google_panel": 6, "social_fb": 7}
 # Two independent weak sources naming the same number. Ranked below every
 # measured single source but above the owner-declared ones — two independent
 # witnesses beat one unmeasured self-declaration.
-CORROBORATED_RANK = 4
+CORROBORATED_RANK = 5
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)-7s %(message)s",

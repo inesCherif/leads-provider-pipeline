@@ -22,10 +22,10 @@ Rate: sequential, one request every DELAY_S — 10 concurrent broke on the
 live site, 6 was clean; sequential is slower and unimpeachable. The whole
 département is ~600 requests, ~8 minutes.
 
-Ranking: `bcontact` is NOT added to m2_s14's PHONE_RANK. Like every new
-source it must EARN a rank by measured agreement with trusted sources (the
-way pagesjaunes earned 83.4%); until then its claims feed the corroboration
-pool, where they act as second witnesses for parked snippet/social claims.
+Ranking: `bcontact` EARNED its PHONE_RANK slot on 2026-08-20, measured the
+way pagesjaunes earned 83.4%: 84.0% agreement vs pagesjaunes (213 overlaps),
+88.9% vs OSM (45). Its 95-96% vs serper_places is discounted — both are
+Google Maps data, same upstream, not an independent witness.
 
 Output : exports/boulangerie/checkpoints/bcontact_listings.csv (m2_s7 input)
 Resume : exports/boulangerie/checkpoints/bcontact_done.txt (fiche URL/line)

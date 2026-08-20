@@ -70,6 +70,9 @@ SOURCES = [
     # electronics retailer for a bakery, so the panel's own printed address
     # is what has to agree, never the question we asked.
     ("google_panel_listings.csv", "google_panel"),
+    # m2_s25 boulangerie.contact. Google-Maps-derived directory; earned its
+    # PHONE_RANK slot 2026-08-20 (84.0% vs pagesjaunes, 88.9% vs OSM).
+    ("bcontact_listings.csv", "bcontact"),
 ]
 
 GEO_STRICT_M = 40.0    # same point, names may differ (rename/rebrand)

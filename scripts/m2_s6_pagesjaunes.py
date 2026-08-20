@@ -472,7 +472,7 @@ def dismiss_consent(page) -> None:
             pass
 
 
-def open_commune(page, commune: str, cp: str) -> bool:
+def open_commune(page, commune: str, cp: str, what: str = "boulangerie") -> bool:
     """Open a commune's first results page by URL, inside the ATTACHED session.
 
     MEASURED 2026-08-14, and it overturns the V4 note: `page.goto()` returns
@@ -485,7 +485,7 @@ def open_commune(page, commune: str, cp: str) -> bool:
     slug + idOu), so every "search" silently re-ran Marseille. The URL is the
     honest way to say which commune we want.
     """
-    url = f"{BASE}/annuaire/{pj_location_slug(commune, cp)}/boulangerie"
+    url = f"{BASE}/annuaire/{pj_location_slug(commune, cp)}/{what}"
     try:
         resp = page.goto(url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
         status = resp.status if resp else 0
@@ -573,6 +573,13 @@ def click_next(page) -> bool:
 def main() -> None:
     ap = argparse.ArgumentParser(description="Harvest Pages Jaunes for dept-13 bakeries")
     ap.add_argument("--pilot", type=int, default=0, help="only the N busiest communes")
+    ap.add_argument("--what", default="boulangerie",
+                    help="PJ category slug. The 816-listing 'ceiling' was "
+                         "measured on `boulangerie` alone; PJ also serves "
+                         "boulangerie-patisserie, boulangeries-patisseries, "
+                         "boulanger-patissier… (2026-08-20). A non-default "
+                         "slug prefixes its own done-keys, so the original "
+                         "harvest is never re-run.")
     ap.add_argument("--headful", action="store_true", help="visible browser (clear a challenge)")
     ap.add_argument("--attach", action="store_true",
                     help=f"attach to YOUR already-running Chrome over CDP ({CDP_URL}) "
@@ -723,7 +730,12 @@ def main() -> None:
                           "Re-solve the challenge in Chrome and re-run; "
                           "pj_done.txt resumes where this left off.")
                 break
+            # Legacy keys (no prefix) belong to the original `boulangerie`
+            # harvest; a new slug writes its own keyspace so neither run can
+            # bury the other.
             where = f"{slug(commune)}-{cp}"
+            if args.what != "boulangerie":
+                where = f"{args.what}:{where}"
             keys = [f"{where}|p{n}" for n in range(1, MAX_PAGES_PER_COMMUNE + 1)]
             if all(k in done for k in keys):
                 continue
@@ -731,9 +743,9 @@ def main() -> None:
 
             if in_page:
                 # ---- IN-PAGE ROUTE: drive PJ's own form, never navigate ----
-                if not open_commune(page, commune, cp):
+                if not open_commune(page, commune, cp, args.what):
                     if is_blocked(page.content() or "", n_cards=count_cards(page))                             and wait_for_human(page):
-                        if not open_commune(page, commune, cp):
+                        if not open_commune(page, commune, cp, args.what):
                             consecutive_blocks += 1
                             continue
                     else:
