@@ -147,14 +147,31 @@ def main() -> None:
     have_phone |= {r["siret"] for r in read(CONTACTS_PATH)
                    if r.get("phone") and r.get("confiance") == "confirme"}
     done = load_done()
-    todo = [r for r in ours if r["siret"] not in have_phone and r["siret"] not in done]
+    # Done-keys are backend-scoped (2026-08-20, same pattern as m2_s6's
+    # slugs): each engine has its own index, so a row ddgs saw is still
+    # unseen by tavily — and a fresh witness is exactly what the ~300 parked
+    # one-witness claims need. Legacy bare-siret keys belong to ddgs.
+    def dkey(siret: str) -> str:
+        return siret if args.backend == "ddgs" else f"{args.backend}:{siret}"
+    todo = [r for r in ours
+            if r["siret"] not in have_phone and dkey(r["siret"]) not in done]
 
-    # Biggest first, same rule as m2_s8: an interrupted run should have spent
-    # its queries on the most valuable rows.
+    # Rows already holding a ONE-witness claim come first (2026-08-20): for
+    # them a single new snippet is the second witness that promotes a parked
+    # number to the dialled column — the highest yield per query any backend
+    # can buy. Then biggest first, same rule as m2_s8.
+    has_claim = set()
+    for fname, phone_col, gate in (("discovered_sites.csv", "phone", "snippet_geo_ok"),
+                                   ("serp_snippets.csv", "phone", ""),
+                                   ("social_emails.csv", "phone", "")):
+        for r in read(CHECK_DIR / fname):
+            if r.get(phone_col) and (not gate or r.get(gate)):
+                has_claim.add(r["siret"])
     EFF = {"": 0, "0 salarie": 1, "1 a 2 salaries": 2, "3 a 5 salaries": 3,
            "6 a 9 salaries": 4, "10 a 19 salaries": 5, "20 a 49 salaries": 6,
            "50 a 99 salaries": 7, "100 a 199 salaries": 8}
-    todo.sort(key=lambda r: (-EFF.get(r["tranche_effectif"], 9),
+    todo.sort(key=lambda r: (0 if r["siret"] in has_claim else 1,
+                             -EFF.get(r["tranche_effectif"], 9),
                              0 if r["enseigne"] else 1))
     if args.pilot:
         todo = todo[:args.pilot]
@@ -176,7 +193,7 @@ def main() -> None:
             except Exception as exc:
                 log.warning(f"[{i}/{len(todo)}] {label[:26]}: {type(exc).__name__}")
                 with DONE_PATH.open("a", encoding="utf-8") as f:
-                    f.write(r["siret"] + "\n")
+                    f.write(dkey(r["siret"]) + "\n")
                 continue
 
             rows = []
@@ -226,7 +243,7 @@ def main() -> None:
                 written += len(rows)
                 hits += 1
             with DONE_PATH.open("a", encoding="utf-8") as f:
-                f.write(r["siret"] + "\n")
+                f.write(dkey(r["siret"]) + "\n")
             if rows or i % 25 == 0:
                 log.info(f"[{i}/{len(todo)}] {label[:24]:24.24} -> "
                          f"{len(rows)} phone(s) | businesses hit {hits} | rows {written}")
