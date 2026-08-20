@@ -64,9 +64,12 @@ OUT_PATH = CHECK_DIR / "pattern_candidates.csv"
 DONE_PATH = CHECK_DIR / "patterns_done.txt"
 
 # Generic shapes, tried after any pattern actually observed in our own corpus.
-# `contact@` first: for a French bakery it is by far the most common, and it
-# needs no name at all.
-GENERIC = ["contact", "info", "bonjour", "boulangerie"]
+# `contact@` first: measured on 328 real French bakery addresses (2026-08-20,
+# OSM sample over 12 departments), `contact@` is ~47% of all custom-domain
+# bakery mailboxes and `prenom.nom@` is near-absent — the B2B literature's
+# ordering does not transfer to micro-businesses. The named shapes stay, but
+# they only ever run after every generic.
+GENERIC = ["contact", "info", "commande", "bonjour", "boulangerie"]
 NAMED = ["{p}.{n}", "{p}", "{n}", "{pi}{n}", "{pi}.{n}", "{p}{n}"]
 
 MAX_CANDIDATES_PER_DOMAIN = 6      # politeness: one connection, few RCPTs
@@ -275,8 +278,24 @@ def main() -> None:
             rows = []
             for addr, (status, tool) in res.items():
                 stats[status] += 1
-                # A catch-all domain ('risky') cannot distinguish a real mailbox
-                # from an invented one, so a candidate there proves nothing.
+                # A catch-all domain ('risky') cannot distinguish a real
+                # mailbox from an invented one — so of the guesses it proves
+                # nothing about, exactly ONE ships, flagged: `contact@` on
+                # the business's own domain. Ines's ruling 2026-08-20 ("if it
+                # exists it exists"): a bakery running catch-all on its own
+                # domain almost certainly reads contact@, measured at ~47% of
+                # custom-domain bakery addresses. It ships as an ACCEPTED-
+                # RISK tranche (`pattern/catchall`, statut `risque`), never
+                # as a verified fact, and m2_s14's ownership gates still
+                # apply. Every other catch-all candidate stays discarded.
+                if status == "risky" and addr == f"contact@{dom}":
+                    rows.append({
+                        "siret": s, "siren": b["siren"],
+                        "raison_sociale": b["raison_sociale"], "commune": b["commune"],
+                        "domain": dom, "candidate": addr,
+                        "pattern": "contact", "status": "risky", "tool": tool,
+                    })
+                    continue
                 if status != "valid":
                     continue
                 rows.append({
@@ -297,8 +316,9 @@ def main() -> None:
     log.info(f"domains probed {len(domains)} | domains yielding a PROVEN address {valid}")
     log.info(f"candidate verdicts: {dict(stats)}")
     log.info(f"written={written} -> {OUT_PATH}")
-    log.info("Only `valid` rows are here. 'risky' means the domain is catch-all "
-             "and accepts everything — those prove nothing and are not kept.")
+    log.info("`valid` rows are SMTP-proven. `risky` rows are the catch-all "
+             "tranche — contact@ on the business's own domain only, shipped "
+             "FLAGGED by m2_s14 after its ownership gates (Ines 2026-08-20).")
 
 
 if __name__ == "__main__":

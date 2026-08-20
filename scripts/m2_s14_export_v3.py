@@ -360,9 +360,9 @@ def main() -> None:
     # already proven — the same two proofs used everywhere else in this file.
     names_of = {b["siret"]: (b.get("raison_sociale", ""), b.get("enseigne", ""))
                 for b in base}
-    n_pattern_disowned = 0
+    n_pattern_disowned = n_catchall = 0
     for r in read("pattern_candidates.csv"):
-        if r.get("status") != "valid":
+        if r.get("status") not in ("valid", "risky"):
             continue
         s, e = r["siret"], r["candidate"].lower()
         dom_p = e.partition("@")[2]
@@ -372,9 +372,22 @@ def main() -> None:
         if not owned or shared or dom_p in junk_domains:
             n_pattern_disowned += 1
             continue
-        cand[s].append((RANK[("confirme", "valide")], e, "valide",
-                        "pattern/verifie", "pattern"))
+        if r["status"] == "valid":
+            cand[s].append((RANK[("confirme", "valide")], e, "valide",
+                            "pattern/verifie", "pattern"))
+        else:
+            # Ines's ruling 2026-08-20: `contact@` on the business's OWN
+            # catch-all domain ships as an accepted-risk tranche — flagged
+            # `pattern/catchall`, statut `risque`, ranked last so it only
+            # ever fills a row nothing better reaches. m2_s10 writes no
+            # other catch-all shape, and the ownership gates above applied.
+            cand[s].append((RANK[("faible", "risque")], e, "risque",
+                            "pattern/catchall", "pattern"))
+            n_catchall += 1
         srcs[s].add("pattern")
+    if n_catchall:
+        log.info(f"catch-all tranche: {n_catchall} contact@ on own catch-all "
+                 f"domains ship flagged `pattern/catchall` (Ines 2026-08-20)")
 
     # REGISTRANT addresses from AFNIC RDAP (m2_s24). Ownership was decided in
     # the harvester — registrant name matches the business, or the mailbox
