@@ -36,11 +36,20 @@ Rules carried over from agriculture and V2, all bought with incidents:
 Phone precedence — set by MEASUREMENT, not by intuition (2026-08-13):
 
     osm > serper_places > pagesjaunes > site/confirme
+        > corrobore(...) > google_panel > social_fb
 
   OSM and Google Maps agree with each other on 45 of the 47 businesses both
   describe (**95.7%**) — two independent sources corroborating one number.
   Nothing else here has that. Intuition said a business's own website should
   outrank a directory; the measurement disagreed, so the directory wins.
+
+  OWNER-DECLARED sources (2026-08-20, Sam's ruling): `google_panel` and
+  `social_fb` are the shop's own pages, created by the owner, and are now
+  dialled directly instead of waiting for a second witness. The panel
+  measured 79.3% agreement with trusted sources; Facebook pages were never
+  measured. Both therefore rank BELOW everything measured and below
+  corroboration — they fill rows nothing better reaches, never displace a
+  better number. The source column names them, so the caller knows.
 
   Two sources are EXCLUDED from the dialled column entirely, and ship in
   `Telephone piste (non confirme)` instead:
@@ -149,10 +158,17 @@ RANK = {("confirme", "valide"): 0, ("confirme", "non verifie"): 1,
 # number always loses to any ordinary one, whatever its source. "snippet" and
 # "site/faible" are deliberately absent — they are not candidates for this
 # column at all (see the docstring for the measurements that decided it).
+#
+# `google_panel` and `social_fb` are OWNER-DECLARED sources, admitted on
+# Sam's ruling of 2026-08-20 (the shop's own page, created by its owner).
+# They sit BELOW every measured source and below corroboration: the panel
+# measured 79.3% against trusted sources and Facebook was never measured, so
+# they only ever fill a row no better source can — never displace one.
 PHONE_RANK = {"osm": 0, "serper_places": 1, "pagesjaunes": 2,
-              "site/confirme": 3}
+              "site/confirme": 3, "google_panel": 5, "social_fb": 6}
 # Two independent weak sources naming the same number. Ranked below every
-# corroborated single source, above nothing — it only ever fills a gap.
+# measured single source but above the owner-declared ones — two independent
+# witnesses beat one unmeasured self-declaration.
 CORROBORATED_RANK = 4
 
 logging.basicConfig(level=logging.INFO,
@@ -445,11 +461,9 @@ def main() -> None:
             n_social_email += 1
         ph = (r.get("phone") or "").strip()
         if ph:
-            # Unranked on purpose: `social_fb` is absent from PHONE_RANK, so
-            # add_phone routes it to the corroboration pool. Facebook has
-            # never been measured against OSM/Maps the way pagesjaunes was
-            # (83.4%), and a page's printed number is exactly the kind of
-            # claim that needs a second witness before anyone dials it.
+            # Owner-declared (Sam's ruling 2026-08-20): the page is created
+            # by the shop's owner, so its printed number is dialled directly.
+            # Ranked last in PHONE_RANK — unmeasured, it fills gaps only.
             add_phone(s, ph, "social_fb")
             n_social_phone += 1
 

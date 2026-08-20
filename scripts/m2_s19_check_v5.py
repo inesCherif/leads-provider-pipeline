@@ -234,10 +234,11 @@ def main() -> None:
     hard(not nosrc, "H11 every phone states its source",
          f"{len(nosrc)} without provenance, e.g. {nosrc[:3]}")
     # A search-snippet phone alone must never reach the dialled column.
-    # `google_panel` (m2_s23) joins them until its agreement with OSM/Maps is
-    # measured, the way pagesjaunes earned its rank at 83.4%. Until then a
-    # panel number ships only when a second source names it too.
-    UNTRUSTED = {"snippet", "site/faible", "google_panel"}
+    # `google_panel` and `social_fb` left this set on 2026-08-20: Sam ruled
+    # that owner-created pages (Google Business panel, the shop's own
+    # Facebook page) are dialled directly. They rank last in PHONE_RANK, so
+    # they fill gaps only; snippets and unconfirmed sites stay banned.
+    UNTRUSTED = {"snippet", "site/faible"}
     leaked = [str(r["SIRET"]) for r in phoned
               if str(r["Telephone source"]).strip() in UNTRUSTED]
     hard(not leaked, "H13 no untrusted source in the dialled Telephone column",

@@ -40,11 +40,11 @@ WHAT THIS SCRIPT REFUSES TO DO, and why each refusal is a scar:
     internal location that your typing never changes; navigate by URL.
 
 Output: `google_panel_listings.csv`, consumed by m2_s7 as source
-`google_panel`. That label is deliberately absent from m2_s14's PHONE_RANK,
-so a panel phone lands in the corroboration pool, not the dialled column: it
-ships as `Telephone` only when a second, independent source names the same
-number. Promoting it outright needs an agreement measurement first, the way
-pagesjaunes earned its rank at 83.4% against OSM/Maps.
+`google_panel`. Since 2026-08-20 that label IS in m2_s14's PHONE_RANK
+(Sam's ruling: the panel is the owner's own page, dial it), ranked last-but-
+one so it only fills rows no measured source reaches. Its measured agreement
+with trusted sources is 79.3% (23/29) — below pagesjaunes' 83.4%, which is
+why it ranks below everything measured and below corroboration.
 
 Usage:
     python scripts/m2_s23_google_panel.py --pilot 20    # ALWAYS first
