@@ -27,6 +27,15 @@ Two invariants, both non-negotiable:
   * AMBIGUITY IS REJECTION. A listing that fits two different SIRETs equally
     well is dropped, not guessed. Same for a SIRET claimed by two listings at
     the same strength — the stronger method wins, a tie loses.
+    ONE ruled exception (Sam, 2026-08-20): several of OUR OWN sirets
+    registered at the listing's exact street address. That ambiguity is
+    between siblings at one address, not strangers across a city — the
+    contact belongs to that address whichever sibling answers — so it is
+    resolved instead of refused: the listing NAME singles out a sibling if
+    it can (addr_name), else the most recently registered SIRET wins
+    (addr_tiebreak, the likely live successor). Every tie-break award
+    records its losing siblings in `tiebreak_losers` so the m2_s19 gate can
+    audit each one; a registration-date tie is still a rejection.
   * NO MATCH WITHOUT LOCATION AGREEMENT (rule 1 excepted, where the SIRET is
     itself the proof). A name alone never carries contact data onto a row.
 
@@ -78,7 +87,8 @@ STOPWORDS = {
 
 FIELDNAMES = ["siret", "siren", "raison_sociale", "commune", "code_postal",
               "source", "method", "distance_m", "listing_name",
-              "phone", "email", "website", "facebook", "listing_id"]
+              "phone", "email", "website", "facebook", "listing_id",
+              "tiebreak_losers"]
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)-7s %(message)s",
@@ -184,6 +194,19 @@ def fnum(v):
         return None
 
 
+def date_key(s: str) -> tuple:
+    """'DD/MM/YYYY' -> (YYYY, MM, DD) for recency comparison.
+
+    Unparseable or missing sorts OLDEST — a sibling with no known
+    registration date must never win a tie-break on that absence.
+    """
+    m = re.match(r"^(\d{2})/(\d{2})/(\d{4})$", (s or "").strip())
+    if not m:
+        return (0, 0, 0)
+    d, mo, y = m.groups()
+    return (int(y), int(mo), int(d))
+
+
 def digits(s: str) -> str:
     return "".join(ch for ch in (s or "") if ch.isdigit())
 
@@ -238,7 +261,8 @@ def main() -> None:
     rejects = Counter()
     method_counts = Counter()
     METHOD_RANK = {"siret_exact": 0, "geo_only": 1, "geo_name": 2,
-                   "addr_street": 3, "name_commune": 4, "name_fuzzy": 5}
+                   "addr_street": 3, "addr_name": 4, "name_commune": 5,
+                   "name_fuzzy": 6, "addr_tiebreak": 7}
     ADDR_MIN = 0.6           # street-token overlap once the number is equal
 
     for L in listings:
@@ -258,6 +282,7 @@ def main() -> None:
             continue
 
         cand = None      # (method, siret, distance)
+        tie_losers = ""  # sibling sirets beaten by an addr_tiebreak award
 
         # 1. SIRET tag — the identifier is its own proof of location.
         s = digits(L.get("siret", ""))
@@ -317,10 +342,34 @@ def main() -> None:
                     cand = ("addr_street", hits[0]["siret"], None)
                 elif len(sirets) > 1:
                     # Several of our companies registered at one address: a
-                    # successor business, or two shops in one building. Which
-                    # one owns this phone is exactly what we cannot tell.
-                    rejects["ambiguous: 2+ companies at the same address"] += 1
-                    continue
+                    # successor business, or two shops in one building.
+                    # Refusing here blocked 105 phone-carrying listings; Sam
+                    # ruled 2026-08-20 to attribute, Ines: to ONE sibling
+                    # only, never duplicated. Evidence first, recency second:
+                    #   a. the listing NAME singles out one sibling — that is
+                    #      evidence, not a guess (addr_name);
+                    #   b. else the most recently registered SIRET wins
+                    #      (addr_tiebreak), the likely live successor, and
+                    #      the losers are recorded for the H27 gate audit.
+                    # A registration-date tie is still a rejection: no
+                    # evidence is left to prefer either sibling.
+                    uniq = {r["siret"]: r for r in hits}
+                    nm = tokens(name)
+                    named = [r for r in uniq.values()
+                             if nm and name_score(nm, r) >= FUZZY_MIN]
+                    if len({r["siret"] for r in named}) == 1:
+                        cand = ("addr_name", named[0]["siret"], None)
+                    else:
+                        dated = sorted(uniq.values(),
+                                       key=lambda r: date_key(r.get("date_creation", "")),
+                                       reverse=True)
+                        newest = date_key(dated[0].get("date_creation", ""))
+                        second = date_key(dated[1].get("date_creation", ""))
+                        if newest == (0, 0, 0) or newest == second:
+                            rejects["ambiguous: same address, date tie"] += 1
+                            continue
+                        cand = ("addr_tiebreak", dated[0]["siret"], None)
+                        tie_losers = " ".join(r["siret"] for r in dated[1:])
 
         # 4/5. Name, but ONLY with location agreement.
         if cand is None and name:
@@ -374,6 +423,7 @@ def main() -> None:
             "distance_m": f"{dist:.0f}" if dist is not None else "",
             "listing_name": name, **payload,
             "listing_id": L.get("osm_id") or L.get("listing_id") or "",
+            "tiebreak_losers": tie_losers,
         }
         key = (siret, src)
         prev = accepted.get(key)

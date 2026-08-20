@@ -71,6 +71,8 @@ XLSX_PATH = EXPORT_DIR / "boulangerie_13_v5.xlsx"
 PREV_PATH = EXPORT_DIR / "boulangerie_13_v4.xlsx"
 VERIFIED_PATH = PROJECT_ROOT / "exports" / "boulangerie" / "checkpoints" / "verified_emails.csv"
 VERDICTS_PATH = PROJECT_ROOT / "exports" / "boulangerie" / "checkpoints" / "site_verdicts.csv"
+MATCHED_PATH = PROJECT_ROOT / "exports" / "boulangerie" / "checkpoints" / "matched.csv"
+ETABS_PATH = PROJECT_ROOT / "exports" / "boulangerie" / "checkpoints" / "etablissements.csv"
 
 NAF_SCOPE = {"10.71C", "10.71B", "10.71D"}
 COUNT_BAND = (1000, 2400)
@@ -449,6 +451,37 @@ def main() -> None:
     hard(not mail_shared, "H26 no e-mail shipped as >2 companies' own address",
          f"{len(mail_shared)} addresses, e.g. "
          f"{[(e[:38], len(s)) for e, s in sorted(mail_shared.items(), key=lambda kv: -len(kv[1]))[:3]]}")
+
+    # H27 — the addr_tiebreak audit (Sam's ruling 2026-08-20). m2_s7 may now
+    # award a shared-address listing to the most recently registered sibling
+    # SIRET. The xlsx cannot show that decision, so the gate reads the
+    # matcher's own file: every award must NAME its losing siblings, and the
+    # winner's registration date must actually be newer than every loser's.
+    # A silent or backwards tie-break fails the build.
+    if MATCHED_PATH.exists() and ETABS_PATH.exists():
+        with ETABS_PATH.open(encoding="utf-8-sig", newline="") as fh:
+            created = {r["siret"]: (r.get("date_creation") or "")
+                       for r in csv.DictReader(fh, delimiter=";")}
+
+        def dkey(s: str) -> tuple:
+            m = re.match(r"^(\d{2})/(\d{2})/(\d{4})$", (s or "").strip())
+            return (int(m.group(3)), int(m.group(2)), int(m.group(1))) if m else (0, 0, 0)
+
+        with MATCHED_PATH.open(encoding="utf-8-sig", newline="") as fh:
+            awards = [r for r in csv.DictReader(fh, delimiter=";")
+                      if r.get("method") == "addr_tiebreak"]
+        bad_tb = []
+        for r in awards:
+            losers = (r.get("tiebreak_losers") or "").split()
+            if not losers:
+                bad_tb.append(f'{r["siret"]}:no losers recorded')
+                continue
+            w = dkey(created.get(r["siret"], ""))
+            if w == (0, 0, 0) or any(w <= dkey(created.get(l, "")) for l in losers):
+                bad_tb.append(f'{r["siret"]}:not the newest sibling')
+        hard(not bad_tb,
+             f"H27 every addr_tiebreak award ({len(awards)}) is audited and truly the newest sibling",
+             f"{len(bad_tb)} bad, e.g. {bad_tb[:3]}")
 
     # H12 — no regression. An enrichment that loses data is a bug.
     n_ph = len(phoned)
