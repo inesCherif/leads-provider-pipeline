@@ -152,6 +152,10 @@ def mark_done(key: str) -> None:
 
 
 SEEN_IDS: set = set()
+# Card ids INSPECTED, written or not: a card that yielded no phone after its
+# reveal must still count as seen, or padded pages re-click it on every slug.
+SEEN_CARDS: set = set()
+SEEN_CARDS_PATH = CHECK_DIR / "pj_seen_cards.txt"
 
 
 def load_seen_ids() -> None:
@@ -160,6 +164,18 @@ def load_seen_ids() -> None:
             for r in csv.DictReader(fh, delimiter=";"):
                 if r.get("listing_id"):
                     SEEN_IDS.add(r["listing_id"])
+    if SEEN_CARDS_PATH.exists():
+        SEEN_CARDS.update(SEEN_CARDS_PATH.read_text(encoding="utf-8").split())
+
+
+def mark_cards_seen(ids: set) -> None:
+    new = ids - SEEN_CARDS
+    if not new:
+        return
+    SEEN_CARDS.update(new)
+    with SEEN_CARDS_PATH.open("a", encoding="utf-8") as f:
+        f.write("\n".join(sorted(new)) + "\n")
+        f.flush()
 
 
 def flush_rows(rows: list[dict]) -> int:
@@ -475,11 +491,30 @@ def main() -> None:
                 n_cards = count_cards(page)
                 if is_blocked(content, n_cards=n_cards):
                     return 0, False, True
+            # PJ pads village pages to 20 cards with "à proximité" listings,
+            # so by category 2 most pages are 100% already-harvested — and the
+            # reveal clicks were costing ~30 s per such page (measured: slug 2
+            # crawled at 1.3 communes/min vs slug 1's 3.4). If every card id
+            # on the page is known, skip the reveals and the extraction: the
+            # page is real (cards prove it) and holds nothing new.
+            card_ids = set()
+            try:
+                for c in page.query_selector_all(CARD_SEL):
+                    cid = (c.get_attribute("id") or "").strip()
+                    if cid:
+                        card_ids.add(cid[3:] if cid.startswith("bi-") else cid)
+            except Exception:
+                pass
+            if n_cards > 0 and card_ids and card_ids <= (SEEN_IDS | SEEN_CARDS):
+                log.info(f"{where} p{pageno}: cards={n_cards}, all already "
+                         "inspected — skipping reveals")
+                return 0, True, False
             clicked = reveal_phones(page)
             if clicked:
                 log.info(f"{where} p{pageno}: revealed {clicked} phone number(s)")
             rows = extract_listings(page, search_url)
             n = flush_rows(rows)
+            mark_cards_seen(card_ids)
             real = bool(rows) or n_cards > 0 or any(k.lower() in low for k in RESULTS_MARKUP)
             log.info(f"{where} p{pageno}: cards={n_cards} written={n}"
                      f"{'' if real else '  (NO results markup — not marking done)'}")
@@ -537,6 +572,16 @@ def main() -> None:
                             consecutive_blocks = 0
                     time.sleep(random.uniform(*PAGE_DELAY))
                     if not click_next(page):
+                        # Natural end of this commune's results: pages past
+                        # this one do not exist, so mark their keys done —
+                        # otherwise every RESTART re-visits all 373 communes
+                        # just to re-learn that p2 is missing (~35 min/restart,
+                        # measured 2026-09-02).
+                        for pn in range(pageno + 1, MAX_PAGES_PER_COMMUNE + 1):
+                            k2 = f"{where}|p{pn}"
+                            if k2 not in done:
+                                mark_done(k2)
+                                done.add(k2)
                         break
             else:
                 continue
