@@ -391,12 +391,21 @@ def open_commune(page, commune: str, cp: str, what: str) -> tuple[bool, int]:
     """Open a commune's first results page by URL inside the attached session.
     Returns (navigated_ok, http_status)."""
     url = f"{BASE}/annuaire/{pj_location_slug(commune)}/{what}"
-    try:
-        resp = page.goto(url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
-        status = resp.status if resp else 0
-    except Exception as exc:
-        log.warning(f"{commune} {cp} [{what}]: navigation failed {type(exc).__name__}")
-        return False, 0
+    status = 0
+    for attempt in (1, 2):
+        try:
+            resp = page.goto(url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
+            status = resp.status if resp else 0
+            break
+        except Exception as exc:
+            log.warning(f"{commune} {cp} [{what}]: navigation failed "
+                        f"{type(exc).__name__} (attempt {attempt}/2)")
+            if attempt == 2:
+                return False, 0
+            # Transient laptop-network drops killed two runs (03:14, 10:04);
+            # one patient retry rides them out without weakening the
+            # consecutive-blocks stop for real walls.
+            time.sleep(15)
     settle(page)
     n = count_cards(page)
     log.info(f"{commune} {cp} [{what}]: HTTP {status}, cards={n}, url={page.url[:78]}")
