@@ -92,13 +92,17 @@ logging.basicConfig(level=logging.INFO,
 log = logging.getLogger("m3ag_s7")
 
 DEPT = "63"                                  # set from --departement in main()
-CP_RE = re.compile(r"\b(63\d{3})\b\s*([A-ZÀ-ÿ][^\n,]*)")
+# ANY French CP, not just the target dept's: PJ pads commune pages with
+# "à proximité" results across the border (measured: 202 of the first 580
+# listings were dept 43/42/03/23). Those rows keep their real location and
+# the MATCHER filters by dept — a dept-03 listing harvested during the 63
+# run is free inventory for the 03 run.
+CP_RE = re.compile(r"\b(\d{5})\b\s*([A-ZÀ-ÿ][^\n,]*)")
 
 
 def set_dept(dept: str) -> None:
-    global DEPT, CP_RE
+    global DEPT
     DEPT = dept
-    CP_RE = re.compile(rf"\b({dept}\d{{3}})\b\s*([A-ZÀ-ÿ][^\n,]*)")
 
 
 def slug(s: str) -> str:
@@ -496,6 +500,15 @@ def main() -> None:
                 if not nav_ok:
                     consecutive_blocks += 1
                     continue
+                # A 403/429 with no cards is Cloudflare, full stop. Without
+                # this check a blocked session "paginates past" already-done
+                # keys for hours (measured 2026-09-02 01:08): one human-wait,
+                # then the block counter does its job.
+                if status in (403, 429) and count_cards(page) == 0:
+                    if not wait_for_human(page):
+                        blocked += 1
+                        consecutive_blocks += 1
+                        continue
                 if status == 404:
                     # The slug does not exist for this commune (or at all) —
                     # a normal verdict, recorded, never retried.
