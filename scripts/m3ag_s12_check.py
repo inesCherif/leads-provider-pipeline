@@ -97,9 +97,16 @@ def main() -> None:
     check(max(nbs.values()) == 1, f"H1 numeroBio unique (max repeat {max(nbs.values())})")
     print(f"  info  H1 SIRETs holding 2+ certifications (rows): {dup_siret}")
     bad_cp = [r for r in rows if r["codePostal"] and (not isinstance(r["codePostal"], str) or len(r["codePostal"]) != 5)]
-    bad_si = [r for r in rows if r["siret"] and (not isinstance(r["siret"], str) or len(r["siret"]) != 14)]
+    # H2 guards OUR handling (Excel turning text into 4,47956E+13), not the
+    # registry's: Agence Bio itself prints two 13-digit SIRETs in dept 03.
+    src_siret = {o["numeroBio"]: o["siret"] for o in ops}
+    bad_si = [r for r in rows if r["siret"] and (not isinstance(r["siret"], str)
+              or str(r["siret"]) != src_siret.get(str(r["numeroBio"]), str(r["siret"])))]
+    src_short = sum(1 for o in ops if o["siret"] and len(o["siret"]) != 14)
     check(not bad_cp, f"H2 codePostal is 5-char text ({len(bad_cp)} bad)")
-    check(not bad_si, f"H2 siret is 14-char text ({len(bad_si)} bad)")
+    check(not bad_si, f"H2 siret is text, identical to the source ({len(bad_si)} altered)")
+    if src_short:
+        print(f"  info  H2 SIRETs malformed IN THE SOURCE (kept as-is): {src_short}")
 
     tels = [r for r in rows if r["telephone_final"]]
     bad_shape = [r for r in tels if not PHONE_RE.match(str(r["telephone_final"]))]
