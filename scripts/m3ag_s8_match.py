@@ -47,8 +47,10 @@ PROJECT_ROOT = Path(__file__).parent.parent
 CHECK_DIR = PROJECT_ROOT / "exports" / "agriculteurs" / "checkpoints"
 
 SOURCES = [
-    ("pj_listings.csv",  "pagesjaunes", ";"),
-    ("osm_listings.csv", "osm",         ";"),
+    ("pj_listings.csv",     "pagesjaunes",     ";"),
+    ("osm_listings.csv",    "osm",             ";"),
+    ("baf_listings.csv",    "bienvenue_ferme", ";"),   # m3ag_s10
+    ("places_listings.csv", "places",          ";"),   # m3ag_s5
 ]
 
 GEO_STRICT_M = 40.0
@@ -293,31 +295,38 @@ def main() -> None:
                         rejects["ambiguous: same address, no name evidence"] += 1
                         continue
 
-        if cand is None and name:
+        # A directory may print a contact PERSON next to the farm name
+        # (bienvenue-a-la-ferme: "Hélène et René Coste"); both are tried,
+        # the farm name first.
+        listing_names = [n for n in (name, L.get("alt_name") or "") if n]
+        if cand is None and listing_names:
             pools = [p for p in (by_cp.get(cp), by_commune.get(commune)) if p]
             if not pools:
                 rejects["no location on listing — name alone is not enough"] += 1
                 continue
-            nm = tokens(name)
-            if not nm:
-                rejects["listing name is only generic words"] += 1
-                continue
             why = ""
-            for pool in pools:
-                exact = [r for r in pool if r["_tokens"] == nm or nm in r["_tok_alt"]]
-                if len({r["_id"] for r in exact}) == 1:
-                    cand = ("name_commune", exact[0]["_id"], None)
-                    break
-                if len(exact) > 1:
-                    why = "ambiguous: same name twice in the commune"
+            for lname in listing_names:
+                nm = tokens(lname)
+                if not nm:
+                    why = why or "listing name is only generic words"
                     continue
-                scored = sorted(((name_score(nm, r), r) for r in pool),
-                                key=lambda x: -x[0])
-                if scored and scored[0][0] >= FUZZY_MIN:
-                    if len(scored) > 1 and scored[1][0] >= scored[0][0] - 0.02:
-                        why = "ambiguous: two equally-good fuzzy names"
+                for pool in pools:
+                    exact = [r for r in pool if r["_tokens"] == nm or nm in r["_tok_alt"]]
+                    if len({r["_id"] for r in exact}) == 1:
+                        cand = ("name_commune", exact[0]["_id"], None)
+                        break
+                    if len(exact) > 1:
+                        why = "ambiguous: same name twice in the commune"
                         continue
-                    cand = ("name_fuzzy", scored[0][1]["_id"], None)
+                    scored = sorted(((name_score(nm, r), r) for r in pool),
+                                    key=lambda x: -x[0])
+                    if scored and scored[0][0] >= FUZZY_MIN:
+                        if len(scored) > 1 and scored[1][0] >= scored[0][0] - 0.02:
+                            why = "ambiguous: two equally-good fuzzy names"
+                            continue
+                        cand = ("name_fuzzy", scored[0][1]["_id"], None)
+                        break
+                if cand is not None:
                     break
             if cand is None and why:
                 rejects[why] += 1

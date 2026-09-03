@@ -56,11 +56,14 @@ TIMEOUT = 20
 
 # All serper_* backends share ONE account-wide credit pool -> one counter key.
 POOL_OF = {"serper_maps": "serper", "serper_places": "serper",
-           "serper_web": "serper", "tavily": "tavily", "ddgs": "ddgs"}
+           "serper_web": "serper", "tavily": "tavily", "ddgs": "ddgs",
+           "places": "places"}
 COST = {"serper_maps": 3}    # per-call credits; every other backend costs 1
 LIMITS = {"serper": 2500,    # one-time free credits, no reset
           "tavily": 1000,    # resets monthly
-          "ddgs": 300}       # our own politeness cap, resets daily
+          "ddgs": 300,       # our own politeness cap, resets daily
+          "places": 1000}    # Google Places (New) Enterprise SKU free cap, monthly
+MONTHLY_POOLS = ("tavily", "places")
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)-7s %(message)s",
@@ -115,7 +118,7 @@ def charge(backend: str, n: int = 1, path: Path = QUOTA_PATH) -> None:
     q = _load_quota(path)
     entry = q.get(pool, {"used": 0})
     today = date.today()
-    if pool == "tavily":
+    if pool in MONTHLY_POOLS:
         month = today.strftime("%Y-%m")
         if entry.get("month") != month:
             entry = {"used": 0, "month": month}
@@ -127,7 +130,7 @@ def charge(backend: str, n: int = 1, path: Path = QUOTA_PATH) -> None:
     if entry["used"] + n > limit:
         raise QuotaExceeded(
             f"{pool}: {entry['used']}/{limit} used — refusing to exceed the "
-            f"free tier. ({'resets monthly' if pool == 'tavily' else 'resets daily' if pool == 'ddgs' else 'one-time credits'})")
+            f"free tier. ({'resets monthly' if pool in MONTHLY_POOLS else 'resets daily' if pool == 'ddgs' else 'one-time credits'})")
     entry["used"] += n
     entry["limit"] = limit
     q[pool] = entry
