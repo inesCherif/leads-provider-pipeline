@@ -385,7 +385,7 @@ VERDICT_JUNK = {"reseau", "annuaire", "hors_sujet", "parked", "mort"}
 
 def classify(*, reached: bool, text: str, own: str, shared: bool,
              communes: frozenset = frozenset(), has_shop_page: bool = False,
-             blocked: bool = False) -> tuple:
+             blocked: bool = False, score_fn=None) -> tuple:
     """(verdict, reason) for one (SIRET, domain) pair. See the taxonomy in
     docs/m2_progress.md; `valide`/`non_verifiable` ship, everything else is
     deleted from the deliverable.
@@ -418,7 +418,9 @@ def classify(*, reached: bool, text: str, own: str, shared: bool,
     if is_parked(text):
         return "parked", "parking_page"
 
-    bakery = bakery_score(text)
+    # `score_fn` lets another sector inject its own "is this page about the
+    # trade" test (m3ag_lib.agri_score); default keeps the bakery behaviour.
+    bakery = (score_fn or bakery_score)(text)
     if has_shop_page:
         return "valide", f"shop_page+{own}"
     is_dir, why = is_directory_like(text, communes)
