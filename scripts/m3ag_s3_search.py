@@ -130,6 +130,7 @@ def main() -> None:
 
     stats = Counter()
     ops_hit = Counter()
+    searched = 0
     try:
         for i, op in enumerate(todo, 1):
             q = build_query(op)
@@ -186,6 +187,7 @@ def main() -> None:
                 if any(r["emails"] for r in rows):
                     ops_hit["email"] += 1
             mark_done(DONE_PATH, dkey(op))
+            searched += 1
             if rows or i % 25 == 0:
                 log.info(f"[{i}/{len(todo)}] {op['raisonSociale'][:26]:26.26} -> {len(rows)} hit(s) "
                          f"| ops with site {ops_hit['site']} phone {ops_hit['phone']} "
@@ -197,7 +199,7 @@ def main() -> None:
         sys.exit(f"auth: {exc}")
 
     log.info("─" * 62)
-    log.info(f"operators searched this run: {len(todo)}")
+    log.info(f"operators searched this run: {searched} of {len(todo)} targeted")
     for k, v in stats.most_common():
         log.info(f"  {k:<40} {v}")
     log.info(f"  operators with a site candidate {ops_hit['site']}, a phone claim "

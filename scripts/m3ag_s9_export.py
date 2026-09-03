@@ -101,9 +101,13 @@ def main() -> None:
     for r in read_csv(CHECK_DIR / "site_contacts.csv"):
         if r.get("dept", dept) == dept:
             site_contacts[r["row_id"]].append(r)
-    site_verdicts = defaultdict(list)
+    last_verdict = {}
     for r in read_csv(CHECK_DIR / "site_verdicts.csv"):
-        if r.get("dept", dept) == dept and r["verdict"] == "valide":
+        if r.get("dept", dept) == dept:
+            last_verdict[(r["row_id"], r["domain"])] = r      # redo runs append: last wins
+    site_verdicts = defaultdict(list)
+    for r in last_verdict.values():
+        if r["verdict"] == "valide":
             site_verdicts[r["row_id"]].append(r)
     hits = defaultdict(list)
     for r in read_csv(CHECK_DIR / "search_hits.csv"):

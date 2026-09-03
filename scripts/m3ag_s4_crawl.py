@@ -119,18 +119,28 @@ def collect_targets(dept: str, ops: list, matches: dict) -> list:
 
 
 def fetch(sess: requests.Session, url: str):
-    """(status, html) — status 0 on network failure."""
-    try:
-        r = sess.get(url, timeout=TIMEOUT, allow_redirects=True)
-        return r.status_code, (r.text if "html" in (r.headers.get("content-type") or "") or r.text[:200].lstrip().startswith("<") else "")
-    except Exception:
-        return 0, ""
+    """(status, html) — status 0 on network failure (after one slower retry).
+
+    2026-09-03: with four jobs sharing the line, 109/200 dept-03 sites came
+    back 'mort' and answered 200 minutes later. Our timeout is not a fact
+    about their server — retry once, and let the caller flag status 0."""
+    for attempt, to in enumerate((TIMEOUT, TIMEOUT * 2)):
+        try:
+            r = sess.get(url, timeout=to, allow_redirects=True)
+            ok = "html" in (r.headers.get("content-type") or "") or r.text[:200].lstrip().startswith("<")
+            return r.status_code, (r.text if ok else "")
+        except requests.exceptions.SSLError:
+            return -1, ""          # host alive, TLS broken: caller tries http
+        except Exception:
+            if attempt == 0:
+                time.sleep(1.5)
+    return 0, ""
 
 
 def crawl_domain(sess: requests.Session, domain: str, deep: bool) -> tuple:
     """(reached, blocked, html_all, pages_read, final_host)."""
     html_parts = []
-    reached = blocked = False
+    reached = blocked = net_fail = False
     pages = 0
     final_host = domain
     urls = [f"https://{domain}{p}" for p in SUBPAGES]
@@ -138,9 +148,11 @@ def crawl_domain(sess: requests.Session, domain: str, deep: bool) -> tuple:
         urls += [u for u in deep_urls(sess, domain) if u not in urls]
     for i, u in enumerate(urls):
         status, html = fetch(sess, u)
-        if status == 0 and i == 0:
+        if status in (0, -1) and i == 0:
             # https failed outright: try http once
             status, html = fetch(sess, f"http://{domain}")
+        if status == 0 and i == 0:
+            net_fail = True
         if status in (401, 403, 429, 503):
             blocked = True
         if status == 200 and html:
@@ -162,6 +174,8 @@ def main() -> None:
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--deep", action="store_true")
     ap.add_argument("--force", action="store_true", help="ignore crawl_done.txt")
+    ap.add_argument("--redo-mort", action="store_true",
+                    help="re-crawl only the targets whose LAST verdict is 'mort'")
     args = ap.parse_args()
     dept = args.departement
 
@@ -170,6 +184,11 @@ def main() -> None:
     targets = collect_targets(dept, ops, matches)
     done = set() if args.force else load_done(DONE_PATH)
     todo = [(op, d, s) for op, d, s in targets if f"{dept}:{op['_id']}:{d}" not in done]
+    if args.redo_mort:
+        last = {}
+        for v in read_csv(VERDICTS_PATH):
+            last[(v["row_id"], v["domain"])] = v["verdict"]
+        todo = [(op, d, s) for op, d, s in targets if last.get((op["_id"], d)) == "mort"]
     # "shared" = WE attached this domain to several operators
     claims = Counter(d for _, d, _ in targets)
     communes = frozenset(norm(op["ville"]) for op in ops)
@@ -194,8 +213,17 @@ def main() -> None:
     sess.headers.update({"User-Agent": UA, "Accept-Language": "fr-FR,fr;q=0.9"})
     stats = Counter()
     n_email_ops = set()
+    net_fails = 0
     for i, (op, domain, source) in enumerate(todo, 1):
-        reached, blocked, html, pages, _ = crawl_domain(sess, domain, args.deep)
+        reached, blocked, html, pages, net_fail = crawl_domain(sess, domain, args.deep)
+        net_fails += int(net_fail)
+        # Sanity gate (the agriculture DNS lesson): if our OWN network fails
+        # on most of a run, stop writing verdicts — they would be about us.
+        if i >= 20 and net_fails / i > 0.5:
+            log.error(f"ABORT: {net_fails}/{i} targets failed at the network level — "
+                      "that is our connection, not their sites. Re-run later "
+                      "(--redo-mort re-tries what was written as 'mort').")
+            break
         text = strip_tags(html) if html else ""
         siret = op.get("siret") or ""
         toks = name_tokens(op["raisonSociale"], op.get("gerant", ""))
@@ -213,6 +241,8 @@ def main() -> None:
                 "agri_score": agri_score(text), "pages_read": pages, "text_chars": len(text)}
         append_rows(VERDICTS_PATH, VERDICT_FIELDS, [vrow])
         stats[f"verdict: {verdict}"] += 1
+        if net_fail:
+            stats["network failure on our side (mort)"] += 1
 
         crows = []
         if verdict in VERDICT_SHIPS and html:
