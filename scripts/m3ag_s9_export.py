@@ -30,6 +30,7 @@ Usage:
 import argparse
 import csv
 import logging
+import re
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -39,7 +40,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
 from m1_s8_export import ILLEGAL_XML                       # noqa: E402
 from m2lib_contact import normalize_fr_phone, is_surtaxe   # noqa: E402
 from m3ag_lib import (CHECK_DIR, OUT_DIR, read_csv, name_tokens, root_domain,  # noqa: E402
-                      is_aggregator, is_junk_witness)
+                      is_aggregator, is_junk_witness, strong_tokens, JUNK_MAILBOX)
 
 COLUMNS = ["raisonSociale", "siret", "gerant", "telephone", "telephoneCommerciale",
            "codeNAF", "siteWebs", "categories", "productions",
@@ -161,10 +162,20 @@ def main() -> None:
         ecands = []         # (email, source)
         if op["email"]:
             ecands.append((op["email"].lower().strip(), "agencebio"))
+        def name_in(*texts) -> bool:
+            flat = " ".join(texts).lower().replace("-", "").replace(".", "").replace("_", "")
+            return any(t.lower() in flat for t in toks if len(t) >= 4)
+
         for c in site_contacts.get(rid, []):
             e = (c.get("email") or "").lower().strip()
             if e:
                 conf = c.get("confiance") or "non verifie"
+                # `probable` = ownership by CP + a name token on the page. A
+                # radio station passed that for DISTRILEADER PUY DE DOME;
+                # for the mailbox we also want the name in the domain/address.
+                if conf == "probable" and not name_in(c["domain"], e):
+                    stats["e-mail withheld: probable site, name not in domain/address"] += 1
+                    continue
                 ecands.append((e, f"site/{conf}"))
         for src in ("bienvenue_ferme", "osm", "pagesjaunes", "places"):
             for m in ms.get(src, []):
@@ -179,6 +190,9 @@ def main() -> None:
         for e, s in sorted(ecands, key=lambda x: rank(EMAIL_RANK, x[1])):
             if e in seen_e:
                 continue
+            if set(re.split(r"[._\-+]", e.partition("@")[0])) & JUNK_MAILBOX or e.partition("@")[0] in JUNK_MAILBOX:
+                stats["e-mail withheld: junk mailbox (dpo, lorem.ipsum…)"] += 1
+                continue
             if verified.get(e) == "invalide":
                 stats["e-mail withheld: invalide"] += 1
                 continue
@@ -188,15 +202,17 @@ def main() -> None:
             seen_e.add(e)
             uniq.append((e, s))
         # within the crawled-site tier prefer an address carrying the farm's name
+        strong = strong_tokens(toks)
+
         def named(e):
             flat = e.replace(".", "").replace("-", "").replace("_", "").replace("@", "")
-            return any(t.lower() in flat for t in toks if len(t) >= 4)
+            return any(t.lower() in flat for t in strong)
         # A site the validator could not read (non_verifiable) ships as a site
         # but its mailbox ships only when the address itself names the farm:
         # contact@genealogic.review reached a farmer's row this way (dept 03).
         before = len(uniq)
-        uniq = [(e, s) for e, s in uniq if s != "site/non verifie" or named(e)]
-        stats["e-mail withheld: unverifiable site, no name"] += before - len(uniq)
+        uniq = [(e, s) for e, s in uniq if s not in ("site/non verifie", "snippet") or named(e)]
+        stats["e-mail withheld: one witness, no farm name in address"] += before - len(uniq)
         uniq.sort(key=lambda x: (rank(EMAIL_RANK, x[1]), 0 if named(x[0]) else 1))
         email_final, email_src = (uniq[0] if uniq else ("", ""))
         email_statut = verified.get(email_final, "") if email_final else ""
@@ -214,6 +230,9 @@ def main() -> None:
                     scands.append((m["website"], src))
         for v in site_verdicts.get(rid, []):
             if v["source"].startswith("search"):
+                if v["own"] in ("cp+nom", "nom_domaine", "cp") and not name_in(v["domain"]):
+                    stats["site withheld: probable, name not in domain"] += 1
+                    continue
                 scands.append((f"https://{v['domain']}", "crawl"))
         scands.sort(key=lambda x: rank(SITE_RANK, x[1]))
         site_final, site_src = (scands[0] if scands else ("", ""))

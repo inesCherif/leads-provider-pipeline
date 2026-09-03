@@ -45,6 +45,34 @@ AGRI_STOPWORDS = {
     "MARAICHER", "MARAICHAGE", "CHEVRERIE", "BERGERIE", "MIELLERIE",
     "LA", "LE", "LES", "DE", "DU", "DES", "ET", "AU", "AUX", "CHEZ", "EN",
     "MONSIEUR", "MADAME", "MR", "MME", "M",
+    # geography repeats across the whole dept: "DISTRILEADER PUY DE DOME"
+    # was matched to radiodome.fr through the token DOME (hand-check 63)
+    "PUY", "DOME", "AUVERGNE", "ALLIER", "CLERMONT", "FERRAND", "LIMAGNE",
+    "SANCY", "LIVRADOIS", "FOREZ", "COMBRAILLES", "BOURBONNAIS", "VOLCANS",
+    "VICHY", "MOULINS", "MONTLUCON", "AMBERT", "ISSOIRE", "THIERS", "RIOM",
+}
+
+# First names are not evidence that an address belongs to THIS farm:
+# `nicolasgarnierpro@gmail.com` matched "MARTINET Nicolas" on NICOLAS alone.
+COMMON_FIRST_NAMES = {
+    "JEAN", "PIERRE", "MICHEL", "ANDRE", "PHILIPPE", "RENE", "LOUIS", "ALAIN",
+    "JACQUES", "BERNARD", "MARCEL", "DANIEL", "ROGER", "ROBERT", "PAUL",
+    "CLAUDE", "CHRISTIAN", "HENRI", "GEORGES", "NICOLAS", "PATRICK", "MARC",
+    "GERARD", "DOMINIQUE", "FRANCOIS", "ERIC", "LAURENT", "STEPHANE", "PASCAL",
+    "DAVID", "GILLES", "THIERRY", "OLIVIER", "SEBASTIEN", "JULIEN", "VINCENT",
+    "FREDERIC", "GUILLAUME", "CHRISTOPHE", "BRUNO", "DIDIER", "JEROME", "YVES",
+    "ANTOINE", "THOMAS", "ALEXANDRE", "MATHIEU", "MATTHIEU", "MAXIME", "ROMAIN",
+    "BENOIT", "SERGE", "JOEL", "FABRICE", "ARNAUD", "LIONEL", "CEDRIC", "FLORENT",
+    "DAMIEN", "ADRIEN", "CLEMENT", "SYLVAIN", "HERVE", "DENIS", "REMI", "REMY",
+    "LUCAS", "HUGO", "LOUIS", "SIMON", "BAPTISTE", "QUENTIN", "MARIE", "JEANNE",
+    "FRANCOISE", "MONIQUE", "CATHERINE", "NATHALIE", "ISABELLE", "SYLVIE",
+    "ANNE", "MARTINE", "JACQUELINE", "CHRISTINE", "NICOLE", "VALERIE", "SANDRINE",
+    "STEPHANIE", "VERONIQUE", "SOPHIE", "CELINE", "CHANTAL", "PATRICIA", "BRIGITTE",
+    "DOMINIQUE", "LAURENCE", "ANNIE", "AURELIE", "EMILIE", "JULIE", "CAMILLE",
+    "MANON", "LAURA", "LEA", "CHLOE", "MARION", "PAULINE", "MATHILDE", "LUCIE",
+    "CLAIRE", "ELODIE", "AUDREY", "CAROLINE", "VIRGINIE", "DELPHINE", "MELANIE",
+    "SEVERINE", "FLORENCE", "AGNES", "CORINNE", "MURIEL", "HELENE", "ELISABETH",
+    "MARGAUX", "JUSTINE", "LAURINE", "LANDRY", "GILDAS", "HERVE", "LUC", "GUY",
 }
 
 # Vocabulary that says "this page is a farm's own page" — the agri
@@ -106,7 +134,9 @@ AGRI_AGGREGATORS = tuple(_M2_AGGREGATORS) + (
 # Hosts that can never be a WITNESS for a phone/e-mail claim (they name
 # people, not businesses): a genealogy site corroborated a farmer's number
 # in the dept-03 hand-check because a homonym had a family tree there.
-JUNK_WITNESS = ("genealog", "geneanet", "filae", "avis-de-deces", "simplifia",
+JUNK_WITNESS = ("youtube", "dailymotion", "vimeo", "osteo", "medecin", "doctolib",
+                "sante", "kine", "dentiste", "infirmier", "avocat", "notaire",
+                "allo-", "genealog", "geneanet", "filae", "avis-de-deces", "simplifia",
                 "libramemoria", "dansnoscoeurs", "copainsdavant", "linkedin",
                 "facebook", "instagram", ".review", "trombi", "pagesblanches-",
                 "118218", "annuaire-inverse", "numeroinverse", "qui-appelle",
@@ -133,6 +163,21 @@ def name_tokens(*names: str) -> set:
     for n in names:
         toks |= {t for t in norm(n).split() if len(t) >= 3 and t not in AGRI_STOPWORDS}
     return toks
+
+
+def strong_tokens(toks: set) -> set:
+    """Name tokens that can identify a farm on their own (no first names)."""
+    return {t for t in toks if len(t) >= 4 and t not in COMMON_FIRST_NAMES}
+
+
+# Mailboxes that are never a prospect's: placeholders, legal/HR/press desks.
+JUNK_MAILBOX = {"lorem", "ipsum", "test", "demo", "user", "example", "exemple",
+                "votre", "email", "e-mail", "mail", "adresse", "prenom", "nom",
+                "prenom.nom", "nom.prenom", "xxx", "dpo", "rgpd", "privacy",
+                "presse", "press", "recrutement", "candidature", "candidatures",
+                "jobs", "job", "emploi", "stage", "facturation", "compta",
+                "comptabilite", "sav", "support", "newsletter", "abuse",
+                "noreply", "no-reply", "nepasrepondre", "postmaster", "webmaster"}
 
 
 def geo_pass(cp: str, commune: str, blob: str) -> str:
