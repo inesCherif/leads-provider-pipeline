@@ -103,6 +103,16 @@ AGRI_AGGREGATORS = tuple(_M2_AGGREGATORS) + (
     "creditsafe", "ellisphere", "fiches-", "companies", "opendatasoft",
 )
 
+# Hosts that can never be a WITNESS for a phone/e-mail claim (they name
+# people, not businesses): a genealogy site corroborated a farmer's number
+# in the dept-03 hand-check because a homonym had a family tree there.
+JUNK_WITNESS = ("genealog", "geneanet", "filae", "avis-de-deces", "simplifia",
+                "libramemoria", "dansnoscoeurs", "copainsdavant", "linkedin",
+                "facebook", "instagram", ".review", "trombi", "pagesblanches-",
+                "118218", "annuaire-inverse", "numeroinverse", "qui-appelle",
+                "tel.fr", "telephone.city", "numtvagratuit", "sitloc", "allbiz",
+                "findglocal", "net1901", "lopt.org", "francenature")
+
 BAD_TLD = (".gouv.fr", ".gov", ".edu", ".ru", ".cn", ".xyz", ".top", ".click", ".work")
 
 SOCIAL_HOSTS = ("facebook.com", "instagram.com", "linkedin.com")
@@ -151,6 +161,11 @@ def is_aggregator(url_or_host: str) -> bool:
     if h.endswith(BAD_TLD):
         return True
     return any(a in h for a in AGRI_AGGREGATORS)
+
+
+def is_junk_witness(host: str) -> bool:
+    h = (host or "").lower()
+    return any(j in h for j in JUNK_WITNESS)
 
 
 def is_social(url_or_host: str) -> bool:

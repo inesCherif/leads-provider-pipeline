@@ -39,7 +39,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
 from m1_s8_export import ILLEGAL_XML                       # noqa: E402
 from m2lib_contact import normalize_fr_phone, is_surtaxe   # noqa: E402
 from m3ag_lib import (CHECK_DIR, OUT_DIR, read_csv, name_tokens, root_domain,  # noqa: E402
-                      is_aggregator)
+                      is_aggregator, is_junk_witness)
 
 COLUMNS = ["raisonSociale", "siret", "gerant", "telephone", "telephoneCommerciale",
            "codeNAF", "siteWebs", "categories", "productions",
@@ -137,6 +137,8 @@ def main() -> None:
         # snippet claims: witness = host root; dialable only with 2 witnesses
         witnesses = defaultdict(set)
         for h in hits.get(rid, []):
+            if is_junk_witness(h["host"]):
+                continue                      # a genealogy page is not a witness
             for p in (h.get("phones") or "").split("|"):
                 if nphone(p) and not is_surtaxe(nphone(p)):
                     witnesses[nphone(p)].add(root_domain(h["host"]))
@@ -187,8 +189,14 @@ def main() -> None:
             uniq.append((e, s))
         # within the crawled-site tier prefer an address carrying the farm's name
         def named(e):
-            flat = e.partition("@")[0].replace(".", "").replace("-", "").replace("_", "")
+            flat = e.replace(".", "").replace("-", "").replace("_", "").replace("@", "")
             return any(t.lower() in flat for t in toks if len(t) >= 4)
+        # A site the validator could not read (non_verifiable) ships as a site
+        # but its mailbox ships only when the address itself names the farm:
+        # contact@genealogic.review reached a farmer's row this way (dept 03).
+        before = len(uniq)
+        uniq = [(e, s) for e, s in uniq if s != "site/non verifie" or named(e)]
+        stats["e-mail withheld: unverifiable site, no name"] += before - len(uniq)
         uniq.sort(key=lambda x: (rank(EMAIL_RANK, x[1]), 0 if named(x[0]) else 1))
         email_final, email_src = (uniq[0] if uniq else ("", ""))
         email_statut = verified.get(email_final, "") if email_final else ""
