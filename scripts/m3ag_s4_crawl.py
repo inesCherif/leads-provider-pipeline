@@ -138,11 +138,10 @@ def fetch(sess: requests.Session, url: str):
 
 
 def crawl_domain(sess: requests.Session, domain: str, deep: bool) -> tuple:
-    """(reached, blocked, html_all, pages_read, final_host)."""
+    """(reached, blocked, html_all, pages_read, net_fail)."""
     html_parts = []
     reached = blocked = net_fail = False
     pages = 0
-    final_host = domain
     urls = [f"https://{domain}{p}" for p in SUBPAGES]
     if deep:
         urls += [u for u in deep_urls(sess, domain) if u not in urls]
@@ -164,7 +163,7 @@ def crawl_domain(sess: requests.Session, domain: str, deep: bool) -> tuple:
         if i == 0 and not reached and not blocked:
             break            # home page dead: do not hammer subpages
         time.sleep(DELAY / 3)
-    return reached, blocked, "\n".join(html_parts), pages, final_host
+    return reached, blocked, "\n".join(html_parts), pages, net_fail
 
 
 def main() -> None:
@@ -215,6 +214,20 @@ def main() -> None:
     n_email_ops = set()
     net_fails = 0
     for i, (op, domain, source) in enumerate(todo, 1):
+        if source.startswith("search") and claims[domain] >= 3:
+            # A search result naming 3+ of OUR operators is a directory or a
+            # network page, never one farm's own site (contract-factory.com
+            # came back for 18 operators). Verdict without a fetch — the
+            # validator would say `reseau` anyway, minus 7 s of network.
+            append_rows(VERDICTS_PATH, VERDICT_FIELDS, [{
+                "dept": dept, "row_id": op["_id"], "siret": op.get("siret") or "",
+                "raisonSociale": op["raisonSociale"], "domain": domain, "source": source,
+                "reached": 0, "blocked": 0, "verdict": "reseau",
+                "reason": f"claimed_by_{claims[domain]}", "own": "none", "shared": 1,
+                "agri_score": 0, "pages_read": 0, "text_chars": 0}])
+            mark_done(DONE_PATH, f"{dept}:{op['_id']}:{domain}")
+            stats["verdict: reseau (no fetch, 3+ claims)"] += 1
+            continue
         reached, blocked, html, pages, net_fail = crawl_domain(sess, domain, args.deep)
         net_fails += int(net_fail)
         # Sanity gate (the agriculture DNS lesson): if our OWN network fails
