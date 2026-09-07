@@ -217,7 +217,11 @@ def write(rows: list[dict], dept: str, out_version: str) -> Path:
 def gate(xlsx_path: Path, dept: str, version: str, etat: dict, expected: int) -> int:
     rows = load_xlsx(xlsx_path)
     verified = {r["email"].lower(): r["verdict"] for r in read_csv(CHECK_DIR / "verified_emails.csv")}
-    src = {r["siret"]: r for r in read_csv(OUT_DIR / f"agriculteurs_{dept}_{version}.csv", delim=",")}
+    # keyed by SIRET, else by name+phone: an empty SIRET must not collapse
+    # every SIRET-less operator onto one key (dept 03 tripped T10 that way)
+    srckey = lambda siret, name, phone: siret if len(siret) == 14 else f"{name}|{phone}"
+    src = {srckey(r["siret"], clean(r["raisonSociale"]), r["telephone_final"]): r
+           for r in read_csv(OUT_DIR / f"agriculteurs_{dept}_{version}.csv", delim=",")}
     fails = []
 
     def check(cond, label):
@@ -244,7 +248,8 @@ def gate(xlsx_path: Path, dept: str, version: str, etat: dict, expected: int) ->
     dom = Counter(m.rpartition("@")[2] for m in mails if m.rpartition("@")[2] not in FREE_MAIL | EXTRA_FREE_MAIL)
     shared = [d for d, n in dom.items() if n > 2]
     check(not shared, f"T9 no corporate domain on > 2 rows (franchise HQ) ({shared[:3]})")
-    check(all(not src.get(str(r["SIRET"]), {}).get("flag_hors_agri") == "1" for r in rows), "T10 no hors-agri row")
+    hors = [r for r in rows if src.get(srckey(str(r["SIRET"]), str(r["Entreprise"]), str(r["Téléphone"])), {}).get("flag_hors_agri") == "1"]
+    check(not hors, f"T10 no hors-agri row ({len(hors)})")
     check(all(r["Statut SIRENE"] for r in rows), "T11 Statut SIRENE always filled")
     print(f"  info  Contact filled: {sum(1 for r in rows if r['Contact'])}/{len(rows)}; "
           f"e-mail: {len(mails)} ({Counter(r['Statut e-mail'] for r in rows if r['E-mail']).most_common()})")
