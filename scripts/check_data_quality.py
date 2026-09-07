@@ -263,11 +263,15 @@ CHECKS = [
 
 # Per-sector checks. SQL may use %(sources)s (the sector's source_sectors as a
 # text[]). `band` names the SECTOR_BANDS entry used by the predicate factory.
+# Scoped on the PRIMARY sector (the file that created the company), which is
+# where the verdict lives (Ines, 2026-09-07: a multi-sector company is
+# qualified and exported under its primary sector; other memberships are
+# recorded in `sectors` only).
 SECTOR_CHECKS = [
     (
         "deliverable population within the sector's band",
         """SELECT count(*), NULL FROM public.v_deliverable_businesses
-           WHERE sectors && %(sources)s::text[]""",
+           WHERE primary_sector = ANY(%(sources)s::text[])""",
         "deliverable", "FAIL",
         "A large swing means a qualification or dedup change moved the base. "
         "Investigate before shipping, even if the change was intentional. "
@@ -277,10 +281,9 @@ SECTOR_CHECKS = [
         "duplicate rate within the sector's band (pct)",
         """SELECT round(100.0 * count(*) FILTER (WHERE co.duplicate_of_company_id IS NOT NULL)
                         / NULLIF(count(*), 0), 2), NULL
-           FROM (SELECT DISTINCT cs.company_id FROM staging.company_sources cs
-                 JOIN staging.source_files sf ON sf.id = cs.source_file_id
-                 WHERE sf.sector = ANY(%(sources)s::text[])) m
-           JOIN staging.companies co ON co.id = m.company_id""",
+           FROM staging.companies co
+           JOIN staging.source_files sf ON sf.id = co.source_file_id
+           WHERE sf.sector = ANY(%(sources)s::text[])""",
         "dup_pct", "FAIL",
         "A spike is over-merging (the fake 12.5% premium-rate-phone result); a "
         "collapse to 0 means dedup was reverted. Both are silent.",
@@ -289,11 +292,10 @@ SECTOR_CHECKS = [
         "qualification rule_version is uniform within the sector",
         """SELECT count(DISTINCT co.qualification_rule_version),
                   string_agg(DISTINCT co.qualification_rule_version, ', ')
-           FROM (SELECT DISTINCT cs.company_id FROM staging.company_sources cs
-                 JOIN staging.source_files sf ON sf.id = cs.source_file_id
-                 WHERE sf.sector = ANY(%(sources)s::text[])) m
-           JOIN staging.companies co ON co.id = m.company_id
-           WHERE co.qualification_status <> 'unqualified'""",
+           FROM staging.companies co
+           JOIN staging.source_files sf ON sf.id = co.source_file_id
+           WHERE sf.sector = ANY(%(sources)s::text[])
+             AND co.qualification_status <> 'unqualified'""",
         "uniform", "WARN",
         "Mixed versions mean a re-qualification did not finish, so verdicts "
         "from two different policies are live at once.",
@@ -301,8 +303,8 @@ SECTOR_CHECKS = [
 ]
 
 SECTOR_COUNT_SQL = """
-    SELECT count(DISTINCT cs.company_id) FROM staging.company_sources cs
-    JOIN staging.source_files sf ON sf.id = cs.source_file_id
+    SELECT count(*) FROM staging.companies co
+    JOIN staging.source_files sf ON sf.id = co.source_file_id
     WHERE sf.sector = ANY(%(sources)s::text[])"""
 
 

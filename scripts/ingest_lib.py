@@ -138,6 +138,22 @@ def name_evidence(registry_name: str | None, *provider_names: str | None) -> boo
     return any(t in hay for t in reg) or any(t in reg_name for t in prov)
 
 
+def clean_naf(raw) -> str | None:
+    """'4711D' / '47.11D' / ' 47.11d ' -> '47.11D'; anything else -> None.
+    Agence Bio writes codes without the dot; the qualification rules are
+    prefix matches on the dotted form ('01.', '55.'), so an undotted code
+    would silently fall out of scope."""
+    s = clean_str(raw)
+    if not s:
+        return None
+    s = s.upper().replace(" ", "").replace("-", ".")
+    # rév.2 '47.11D' and the pre-2008 rév.1 '01.1A' (1,281 agriculture rows
+    # still carry those; the prefix rules cover both)
+    if re.fullmatch(r"[0-9]{2}\.?[0-9]{1,2}[A-Z]", s):
+        return s if "." in s else s[:2] + "." + s[2:]
+    return None
+
+
 def luhn_ok(digits: str) -> bool:
     """Luhn check as used by SIREN/SIRET. Diagnostic only (La Poste's SIRETs
     legitimately fail it)."""

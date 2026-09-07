@@ -60,7 +60,7 @@ from config.ingest_specs import FILE_SPECS, spec_for            # noqa: E402
 from config.sector_rules import source_to_sector_key             # noqa: E402
 from ingest_lib import (                                          # noqa: E402
     check_column_contract, classify_email, clean_department, clean_phone,
-    clean_postal_code, clean_siren, clean_siret, clean_str, dialable_first, get_conn, is_surtaxe,
+    clean_naf, clean_postal_code, clean_siren, clean_siret, clean_str, dialable_first, get_conn, is_surtaxe,
     json_dumps, luhn_ok, name_evidence, normalize_status, phone_digits, sha256_file,
     siret_to_siren, truncated_identifier,
 )
@@ -226,14 +226,7 @@ def normalize_rows(df, spec: dict, file_hash: str) -> list[dict]:
         n["postal_code"] = clean_postal_code(n.get("postal_code"))
         n["department"]  = clean_department(n.get("department"))
         n["creation_date"] = _parse_date(n.get("creation_date_raw"))
-        code = clean_str(n.get("naf_code_source"))
-        if code:
-            code = code.upper().replace(" ", "")
-            if re.fullmatch(r"[0-9]{2}\.?[0-9]{2}[A-Z]", code):
-                code = code if "." in code else code[:2] + "." + code[2:]
-            else:
-                code = None
-        n["naf_code_source"] = code
+        n["naf_code_source"] = clean_naf(n.get("naf_code_source"))
 
         # phones: every phone column, first two become main/alt
         phones, seen = [], set()

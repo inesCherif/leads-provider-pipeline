@@ -128,6 +128,7 @@ FUZZY_CTE = """
 WITH one_site AS (
     SELECT DISTINCT ON (co.id)
            co.id, co.siren, co.naf_code, co.created_at,
+           sf.sector,                                   -- M4: primary sector
            btrim(s.postal_code) AS pc,
            regexp_replace(unaccent(lower(coalesce(co.legal_name, co.trade_name))),
                           '[^a-z0-9]+', ' ', 'g') AS nm,
@@ -136,6 +137,7 @@ WITH one_site AS (
              LIMIT 1) AS phone
     FROM staging.companies co
     JOIN staging.sites s ON s.company_id = co.id
+    JOIN staging.source_files sf ON sf.id = co.source_file_id
     WHERE co.qualification_status IN ('qualified', 'qualified_unverified')
       AND co.duplicate_of_company_id IS NULL
       AND coalesce(co.legal_name, co.trade_name) IS NOT NULL
@@ -151,6 +153,7 @@ pairs AS (
     FROM one_site a
     JOIN one_site b
       ON a.pc = b.pc
+     AND a.sector = b.sector                    -- M4 GUARD 0: never across sectors
      AND a.id < b.id
      AND a.nm <> b.nm
      AND a.phone IS NOT NULL
@@ -181,10 +184,12 @@ CTE = """
 WITH one_site AS (
     SELECT DISTINCT ON (co.id)
            co.id, co.siren, co.naf_code, co.created_at,
+           sf.sector,                                   -- M4: primary sector
            btrim(s.postal_code) AS pc,
            coalesce(co.legal_name, co.trade_name) AS raw_name
     FROM staging.companies co
     JOIN staging.sites s ON s.company_id = co.id
+    JOIN staging.source_files sf ON sf.id = co.source_file_id
     WHERE co.qualification_status IN ('qualified', 'qualified_unverified')
       AND co.duplicate_of_company_id IS NULL
     ORDER BY co.id, s.siret NULLS LAST, s.id
@@ -204,10 +209,13 @@ ranked AS (
            row_number() OVER w      AS rn,
            first_value(v.id)    OVER w AS survivor_id,
            first_value(v.siren) OVER w AS survivor_siren,
-           count(*) OVER (PARTITION BY v.name_key, v.pc) AS grp_size
+           count(*) OVER (PARTITION BY v.name_key, v.pc, v.sector) AS grp_size
     FROM valid v
     WINDOW w AS (
-        PARTITION BY v.name_key, v.pc
+        -- M4 GUARD 0: a group never spans two sectors. Two no-SIREN businesses
+        -- with the same name at one postcode in different sectors (a 'SARL
+        -- DUPONT' printing shop and a 'SARL DUPONT' gîte) are not one business.
+        PARTITION BY v.name_key, v.pc, v.sector
         ORDER BY (v.siren IS NOT NULL) DESC, (v.naf_code IS NOT NULL) DESC,
                  v.created_at, v.id
     )

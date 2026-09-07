@@ -119,7 +119,15 @@ log = logging.getLogger("m1_s5")
 # {where_clause}.
 CLASSIFY_CTE = """
 WITH target AS (
-    SELECT c.id, c.siren, c.naf_code, c.naf_label, c.sirene_etat
+    -- M4: sectors whose companies arrive with the provider's / registry-API's
+    -- NAF but no SIRENE enrichment yet may fall back to naf_code_source
+    -- (sector_rules "naf_fallback_source"). OFF for agriculture on purpose:
+    -- 570 farms merged with the tourism file now carry a 55.xx provider NAF,
+    -- and a farm stay must stay qualified as a farm.
+    SELECT c.id, c.siren,
+           CASE WHEN %(naf_fallback)s THEN coalesce(c.naf_code, c.naf_code_source)
+                ELSE c.naf_code END AS naf_code,
+           c.naf_label, c.sirene_etat
     FROM staging.companies c
     JOIN staging.source_files sf ON sf.id = c.source_file_id
     WHERE sf.sector = ANY(%(source_sectors)s)
@@ -174,6 +182,7 @@ def rule_params(sector: dict) -> dict:
         "prefixes":        [p + "%" for p in sector["naf_prefixes_in_scope"]],
         "rule_version":    sector["rule_version"],
         "source_sectors":  list(sector["source_sectors"]),
+        "naf_fallback":    bool(sector.get("naf_fallback_source", False)),
     }
 
 

@@ -50,7 +50,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
 import psycopg2                                    # noqa: E402
 import psycopg2.extras                             # noqa: E402
 from ingest_lib import (                           # noqa: E402
-    classify_email, clean_phone, clean_siret, clean_str, get_conn, is_surtaxe,
+    classify_email, clean_naf, clean_phone, clean_siret, clean_str, get_conn, is_surtaxe,
     json_dumps, phone_digits, propagate_invalid_emails, sha256_file, siret_to_siren,
     truncated_identifier,
 )
@@ -166,7 +166,7 @@ def build(dept: str, limit: int | None):
             "_row_index": line_of.get(nb, -1), "_has_name": True,
             "legal_name": clean_str(r["raisonSociale"]), "trade_name": clean_str((payloads.get(nb) or {}).get("denominationcourante")),
             "naf_label": clean_str(r["categories"]) or clean_str(r["activites"]),
-            "naf_code_source": clean_str(r["codeNAF"]), "creation_date": None,
+            "naf_code_source": clean_naf(r["codeNAF"]), "creation_date": None,
             "address_line1": clean_str(r["adresse"]), "address_line2": None,
             "postal_code": clean_str(r["codePostal"]), "city": clean_str(r["ville"]), "department": dept,
             "latitude": clean_str(r["lat"]), "longitude": clean_str(r["lon"]),

@@ -159,6 +159,7 @@ _NEVER = r"\ynever_matches_anything\y"
 # The provider file is measured contaminated (6820B SCIs, 0161Z farms, 5610C
 # restaurants) -- hence the hard excludes.
 _BOULANGERIE = {
+    "naf_fallback_source": True,   # provider/registry NAF counts until SIRENE fills naf_code
     "key": "boulangerie",
     "rule_version": "boul-v1",
     "source_sectors": ("boulangerie",),
@@ -171,6 +172,7 @@ _BOULANGERIE = {
 }
 
 _IMPRIMERIE = {
+    "naf_fallback_source": True,   # provider/registry NAF counts until SIRENE fills naf_code
     "key": "imprimerie",
     "rule_version": "impr-v1",
     "source_sectors": ("imprimerie",),
@@ -185,6 +187,7 @@ _IMPRIMERIE = {
 }
 
 _VITICULTURE = {
+    "naf_fallback_source": True,   # provider/registry NAF counts until SIRENE fills naf_code
     "key": "viticulture",
     "rule_version": "viti-v1",
     "source_sectors": ("viticulture",),
@@ -200,6 +203,7 @@ _VITICULTURE = {
 # residences, campings, centres equestres). Ines decided 2026-09-07: ONE sector,
 # sub-scope by NAF at export time.
 _TOURISME = {
+    "naf_fallback_source": True,   # provider/registry NAF counts until SIRENE fills naf_code
     "key": "tourisme",
     "rule_version": "tour-v1",
     "source_sectors": ("tourisme",),
@@ -216,6 +220,7 @@ _TOURISME = {
 # NOT added to _AGRI's source_sectors: the two agriculture datasets stay
 # separately scoped (different provenance, different deliverable).
 _AGRI_BIO = {
+    "naf_fallback_source": True,   # provider/registry NAF counts until SIRENE fills naf_code
     "key": "agriculteurs_bio",
     "rule_version": "agribio-v1",
     "source_sectors": ("agriculteurs_bio",),

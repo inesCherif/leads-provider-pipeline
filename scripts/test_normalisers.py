@@ -30,7 +30,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
 
 from ingest_lib import (                        # noqa: E402
     classify_email, clean_department, clean_phone, clean_postal_code, clean_siren,
-    dialable_first, name_evidence,
+    clean_naf, dialable_first, name_evidence,
     clean_siret, luhn_ok, normalize_status, repair_email_domain, siret_to_siren,
     truncated_identifier,
 )
@@ -242,6 +242,14 @@ check("provider token inside the registry name counts too (VIOLET / LES VIOLETTE
       name_evidence("LES VIOLETTES  LES VIOLETTES", "VIOLET", None), True)
 check("HYPER U vs CARGLASS -> no evidence", name_evidence("CARGLASS S.A.S.", "HYPER U", "DUPONT JEAN"), False)
 check("empty registry name -> False", name_evidence(None, "X"), False)
+
+print("clean_naf - Agence Bio writes codes without the dot")
+check("'4711D' -> 47.11D", clean_naf("4711D"), "47.11D")
+check("'01.29Z' unchanged", clean_naf("01.29Z"), "01.29Z")
+check("lowercase and spaces normalised", clean_naf(" 55.20z "), "55.20Z")
+check("rev.1 '011A' -> 01.1A (pre-2008 codes still in the data)", clean_naf("011A"), "01.1A")
+check("'47-11C' -> 47.11C", clean_naf("47-11C"), "47.11C")
+check("junk -> NULL", clean_naf("BOULANGERIE"), None)
 
 # ── summary ──────────────────────────────────────────────────────────────────
 print("\n" + "-" * 70)
