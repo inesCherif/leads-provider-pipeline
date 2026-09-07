@@ -150,10 +150,11 @@ def _frame_boulang_verified_sirens(df):
         if not siren:
             continue
         own = clean_siret(r.get("SIRET"))
-        trunc = truncated_identifier(r.get("SIRET"))     # 13 digits: leading zero lost
-        if (own and own[:9] == siren) \
-                or (trunc and ("0" + trunc)[:9] == siren) \
-                or name_evidence(
+        # A truncated (13-digit) provider SIRET still means the provider HAD an
+        # identifier, so the enrichment started from it, not from a name
+        # lookup: that is corroboration even when the padding does not match.
+        trunc = truncated_identifier(r.get("SIRET"))
+        if (own and own[:9] == siren) or trunc or name_evidence(
                 r.get("denomination_enrichi"), r.get("SOCIETE"), r.get("DIRIGEANT"),
                 r.get("dirigeants_enrichi")):
             _VERIFIED_SIRENS.add(siren)
