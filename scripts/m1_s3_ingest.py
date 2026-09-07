@@ -60,7 +60,7 @@ from config.ingest_specs import FILE_SPECS, spec_for            # noqa: E402
 from config.sector_rules import source_to_sector_key             # noqa: E402
 from ingest_lib import (                                          # noqa: E402
     check_column_contract, classify_email, clean_department, clean_phone,
-    clean_postal_code, clean_siren, clean_siret, clean_str, get_conn, is_surtaxe,
+    clean_postal_code, clean_siren, clean_siret, clean_str, dialable_first, get_conn, is_surtaxe,
     json_dumps, luhn_ok, normalize_status, phone_digits, sha256_file,
     siret_to_siren, truncated_identifier,
 )
