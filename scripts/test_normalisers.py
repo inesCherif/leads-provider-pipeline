@@ -28,9 +28,10 @@ PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
 
-from m1_s3_ingest import (                      # noqa: E402
-    clean_postal_code, clean_siret, normalize_status,
-    repair_email_domain, siret_to_siren,
+from ingest_lib import (                        # noqa: E402
+    classify_email, clean_department, clean_phone, clean_postal_code, clean_siren,
+    clean_siret, luhn_ok, normalize_status, repair_email_domain, siret_to_siren,
+    truncated_identifier,
 )
 from m1_s9d_nameparse import parse_name, tokenise   # noqa: E402
 from m1_s9e_email_repair import repair as repair_email  # noqa: E402
@@ -146,6 +147,72 @@ print("\ntokenise — accents and digits")
 check("accents folded", tokenise("ANDROUIN JéRôME"), ["ANDROUIN", "JEROME"])
 check("digits dropped", tokenise("ECOUTE TON CHIEN 21 39"),
       ["ECOUTE", "TON", "CHIEN"])
+
+# ── M4 (2026-09-07): float artefacts, phones, e-mail gate ────────────────────
+print("\nclean_siret / clean_siren — Excel float artefacts and placeholders")
+check("float-mangled SIRET '30819741700014.0' -> digits",
+      clean_siret("30819741700014.0"), "30819741700014")
+check("placeholder '0.0' -> NULL (14,175 rows in the tourism file)",
+      clean_siret("0.0"), None)
+check("placeholder '0' -> NULL", clean_siret("0"), None)
+check("13-digit float still NULL, still not padded",
+      clean_siret("2000700000012.0"), None)
+check("clean_siren accepts 9 digits", clean_siren("851112631"), "851112631")
+check("clean_siren rejects 8 digits (leading zero lost) -> NULL",
+      clean_siren("51112631"), None)
+check("truncated_identifier keeps a 13-digit SIRET for later recovery",
+      truncated_identifier("2000700000012.0"), "2000700000012")
+check("truncated_identifier ignores a valid 14-digit value",
+      truncated_identifier("30819741700014"), None)
+check("luhn_ok on a real SIRET", luhn_ok("30819741700014"), True)
+check("luhn_ok rejects a corrupted one", luhn_ok("30819741700015"), False)
+
+print("\nclean_postal_code — float artefact BEFORE the 5-char cut")
+check("'69007.0' -> 69007", clean_postal_code("69007.0"), "69007")
+check("'2988.0' -> 02988 (was 29880: dot removed then truncated)",
+      clean_postal_code("2988.0"), "02988")
+check("'1250' -> 01250 (unchanged rule)", clean_postal_code("1250"), "01250")
+
+print("\nclean_department — 2/3 chars or nothing")
+check("'69' kept", clean_department("69"), "69")
+check("'26.0' float -> 26", clean_department("26.0"), "26")
+check("'2A' kept", clean_department("2a"), "2A")
+check("'SO' is noise -> NULL", clean_department("SO"), None)
+check("a street is noise -> NULL", clean_department("1 RUE PASTEUR"), None)
+
+print("\nclean_phone — five provider shapes, one canonical form")
+check("'33472897000' (country code, no plus)", clean_phone("33472897000"), "04 72 89 70 00")
+check("'475591313.0' (float, leading zero lost)", clean_phone("475591313.0"), "04 75 59 13 13")
+check("'05 57 74 63 40' already canonical", clean_phone("05 57 74 63 40"), "05 57 74 63 40")
+check("'+33 6 46 14 53 22'", clean_phone("+33 6 46 14 53 22"), "06 46 14 53 22")
+check("'33GUEUGNON' junk -> NULL", clean_phone("33GUEUGNON"), None)
+check("'333631' junk -> NULL", clean_phone("333631"), None)
+check("'N/A' -> NULL", clean_phone("N/A"), None)
+check("premium 08 99 is RETURNED, flagged elsewhere",
+      clean_phone("0899123456"), "08 99 12 34 56")
+
+print("\nclassify_email — what may reach staging.emails")
+check("plain address -> candidate",
+      classify_email("Ferme@Campagnolle.fr")[:2], ("ferme@campagnolle.fr", "candidate"))
+check("dotless domain repaired -> candidate",
+      classify_email("x@gmailcom")[:2], ("x@gmail.com", "candidate"))
+check("space in LOCAL part removed (S9-E rule)",
+      classify_email("morelet olivier@orange.fr")[:2], ("moreletolivier@orange.fr", "candidate"))
+check("space in DOMAIN -> malformed with hyphen candidate",
+      classify_email("reynald@systeme u.fr")[1:],
+      ("malformed", {"defect": "space_in_domain", "candidate": "reynald@systeme-u.fr"}))
+check("glued 'gmail.coml.com' -> malformed, S9-F candidate",
+      classify_email("fxmartin@gmail.coml.com")[1:],
+      ("malformed", {"defect": "glued_domain", "candidate": "fxmartin@gmail.com"}))
+check("glued 'orange.frfr' -> malformed (unknown TLD)",
+      classify_email("f.morel@orange.frfr")[1], "malformed")
+check("glued 'maison-conde.comnadoo.fr' -> malformed",
+      classify_email("contact@maison-conde.comnadoo.fr")[1], "malformed")
+check("'.comm' -> malformed", classify_email("contact@lagrandcave.comm")[1], "malformed")
+check("legit '.paris' TLD ships", classify_email("a@boulangerie.paris")[1], "candidate")
+check("legit 'me.com' ships", classify_email("a@me.com")[1], "candidate")
+check("two @ -> malformed", classify_email("a@b@c.fr")[1], "malformed")
+check("empty -> empty", classify_email("nan")[1], "empty")
 
 # ── summary ──────────────────────────────────────────────────────────────────
 print("\n" + "-" * 70)
