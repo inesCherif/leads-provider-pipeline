@@ -384,5 +384,43 @@ def get_conn(attempts: int = 4):
     raise SystemExit(f"could not connect after {attempts} attempts: {last}")
 
 
+def propagate_invalid_emails(conn) -> dict:
+    """A proven-invalid e-mail claim invalidates the SAME address on the SAME
+    company in staging.emails, whatever file staged it, then a new primary is
+    picked for the contacts that lost theirs. First hit 2026-09-07: Mehdi's
+    bakery file shipped contact@hawecker.com and contact@maisonsoulier.fr;
+    our SMTP verification of sector 2 had already recorded both as
+    'smtp_rcpt' (mailbox refused). Two sources, one memory."""
+    stats = {}
+    with conn.cursor() as cur:
+        cur.execute("""
+            WITH hit AS (
+                SELECT e.id, e.contact_id FROM staging.emails e
+                JOIN staging.contacts c ON c.id = e.contact_id
+                JOIN staging.contact_points cp
+                  ON cp.company_id = c.company_id AND cp.kind = 'email'
+                 AND cp.value_norm = lower(e.email_address) AND cp.verdict = 'invalid'
+                WHERE e.verification_status <> 'invalid')
+            UPDATE staging.emails e SET verification_status = 'invalid', is_primary = FALSE,
+                   verifier_tool = COALESCE(e.verifier_tool, 'contact_points:invalid'),
+                   verified_at = COALESCE(e.verified_at, now())
+            FROM hit WHERE e.id = hit.id
+            RETURNING e.contact_id""")
+        contacts = [r[0] for r in cur.fetchall()]
+        stats["invalidated"] = len(contacts)
+        if contacts:
+            cur.execute("""
+                UPDATE staging.emails e SET is_primary = TRUE WHERE e.id IN (
+                    SELECT DISTINCT ON (contact_id) id FROM staging.emails x
+                    WHERE x.contact_id = ANY(%s::uuid[]) AND x.verification_status <> 'invalid'
+                      AND NOT EXISTS (SELECT 1 FROM staging.emails p
+                                      WHERE p.contact_id = x.contact_id AND p.is_primary)
+                    ORDER BY contact_id, (verification_status = 'valid') DESC, created_at, id)""",
+                        (contacts,))
+            stats["new_primaries"] = cur.rowcount
+    conn.commit()
+    return stats
+
+
 def json_dumps(obj) -> str:
     return json.dumps(obj, ensure_ascii=False, default=str)
