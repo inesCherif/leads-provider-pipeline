@@ -10,6 +10,11 @@ Residential-IP wall (Orange/SFR/Outlook/Yahoo refuse probes) applies, so
 most consumer mailboxes come back `non verifie` — that is our limit, not
 a fact about the address.
 
+Since 2026-09-07 the operators' own Agence Bio addresses are verified too
+(operateurs_<dept>.csv, comma-delimited). Until then they shipped on the
+strength of being owner-declared; the téléopératrice file needs the proven
+bounces out, and m3ag_s9 already withholds any `invalide`.
+
 Usage:
     python scripts/m3ag_s11_verify.py
     python scripts/m3ag_s11_verify.py --limit 30
@@ -43,8 +48,14 @@ def collect_emails() -> dict:
                     e = e.strip().lower()
                     if "@" in e:
                         out.setdefault(e.rpartition("@")[2], set()).add(e)
-    # operators' own Agence Bio addresses are NOT verified here on purpose:
-    # they are owner-declared and ship regardless (same as V1).
+    # operators' own Agence Bio declared addresses — comma-delimited, unlike
+    # the harvest checkpoints above
+    for p in sorted(CHECK_DIR.glob("operateurs_*.csv")):
+        with p.open(encoding="utf-8-sig", newline="") as fh:
+            for r in csv.DictReader(fh):
+                e = (r.get("email") or "").strip().lower()
+                if "@" in e:
+                    out.setdefault(e.rpartition("@")[2], set()).add(e)
     return out
 
 
