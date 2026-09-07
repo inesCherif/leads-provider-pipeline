@@ -61,7 +61,7 @@ from config.sector_rules import source_to_sector_key             # noqa: E402
 from ingest_lib import (                                          # noqa: E402
     check_column_contract, classify_email, clean_department, clean_phone,
     clean_postal_code, clean_siren, clean_siret, clean_str, dialable_first, get_conn, is_surtaxe,
-    json_dumps, luhn_ok, normalize_status, phone_digits, sha256_file,
+    json_dumps, luhn_ok, name_evidence, normalize_status, phone_digits, sha256_file,
     siret_to_siren, truncated_identifier,
 )
 
@@ -113,6 +113,15 @@ def _pre_boulang_keys(n, raw):
     keep = next((c for c in cands if c and siren and c[:9] == siren), None)
     if keep is None and siren is None:
         keep = cands[0]                      # 8-digit siren_enrichi: fall back to the file's SIRET
+    # An enriched SIREN with no provider SIRET behind it must carry NAME
+    # evidence, or it is a lookup we cannot audit (160/10,685 measured; one
+    # was a bakery attached to a commune). Unverified -> no-SIREN path, the
+    # value kept in attrs for a later registry check.
+    if siren and cands[0] is None and siren not in _VERIFIED_SIRENS:
+        n.setdefault("_extra_attrs", {}).update(
+            {"siren_enrichi_unverified": siren, "siret_enrichi_unverified": keep})
+        n["legal_name"] = None               # the registry name belongs to that other entity
+        siren, keep = None, None             # siret_enrichi is the same unaudited lookup
     n["siret"] = keep
     n["siren"] = siren or siret_to_siren(keep)
     n["siret_alt"] = None
@@ -126,10 +135,36 @@ PRE_CLEAN = {
     "boulang_keys":     _pre_boulang_keys,
 }
 
+_VERIFIED_SIRENS: set = set()
+
+
+def _frame_boulang_verified_sirens(df):
+    """Evidence is judged per SIREN across the WHOLE file, not per row: a chain
+    (one SIREN, 19 rows) is vindicated by any row whose provider SIRET agrees
+    or whose names share a token with the registry denomination. Measured
+    2026-09-07: 122 rows / 101 companies unverifiable, 12 of which had another
+    row with evidence and were wrongly unlinked by a per-row rule."""
+    _VERIFIED_SIRENS.clear()
+    for _, r in df.iterrows():
+        siren = clean_siren(r.get("siren_enrichi"))
+        if not siren:
+            continue
+        own = clean_siret(r.get("SIRET"))
+        trunc = truncated_identifier(r.get("SIRET"))     # 13 digits: leading zero lost
+        if (own and own[:9] == siren) \
+                or (trunc and ("0" + trunc)[:9] == siren) \
+                or name_evidence(
+                r.get("denomination_enrichi"), r.get("SOCIETE"), r.get("DIRIGEANT"),
+                r.get("dirigeants_enrichi")):
+            _VERIFIED_SIRENS.add(siren)
+    return df
+
+
 # Frame-level hooks (after the raw landing, before normalisation).
 PRE_FRAME = {
     # 896 exact duplicate rows; (name, zipcode, phone) is the listing identity.
     "viticulteur_pj": lambda df: df.drop_duplicates(subset=["name", "zipcode", "phone"]),
+    "boulang_keys":   _frame_boulang_verified_sirens,
 }
 
 
@@ -202,6 +237,7 @@ def normalize_rows(df, spec: dict, file_hash: str) -> list[dict]:
 
         # sector-specific long tail
         n["_attrs"] = {c: clean_str(raw.get(c)) for c in spec["attribute_columns"] if clean_str(raw.get(c))}
+        n["_attrs"].update(n.pop("_extra_attrs", {}))
 
         # external identifiers
         ids = {t: n.get(f) for t, f in spec["identifier_columns"].items() if n.get(f)}

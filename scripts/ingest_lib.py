@@ -110,6 +110,34 @@ def truncated_identifier(raw) -> str | None:
     return None
 
 
+_TOKEN_RE = re.compile(r"[^A-Z0-9]+")
+
+
+def _fold(s: str | None) -> str:
+    import unicodedata
+    return unicodedata.normalize("NFKD", s or "").encode("ascii", "ignore").decode().upper()
+
+
+def name_evidence(registry_name: str | None, *provider_names: str | None) -> bool:
+    """True when the registry's denomination shares at least one token of 4+
+    characters with any of the provider's names (business, manager, officers).
+
+    Why: the bakery provider file carries a registry SIREN on every row, but
+    where its own SIRET was a placeholder the SIREN came from a name/address
+    lookup we cannot audit. Measured 2026-09-07: 160 of 10,685 rows had NO
+    shared token AND a placeholder SIRET — one was a Brive bakery attached to
+    a commune in Haute-Marne. A franchise ('U EXPRESS' -> 'SASHEL') also
+    shares no token, so this test is applied ONLY when the provider's own
+    SIRET is absent; with a SIRET that agrees, the identity is corroborated.
+    """
+    reg_name = _fold(registry_name)
+    reg = {t for t in _TOKEN_RE.split(reg_name) if len(t) >= 4}
+    hay = " ".join(_fold(n) for n in provider_names if n)
+    prov = {t for t in _TOKEN_RE.split(hay) if len(t) >= 4}
+    # both directions: 'VIOLET' (provider) is inside 'LES VIOLETTES' (registry)
+    return any(t in hay for t in reg) or any(t in reg_name for t in prov)
+
+
 def luhn_ok(digits: str) -> bool:
     """Luhn check as used by SIREN/SIRET. Diagnostic only (La Poste's SIRETs
     legitimately fail it)."""

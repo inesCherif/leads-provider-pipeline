@@ -225,10 +225,11 @@ CHECKS = [
         "contact_points.value_norm is well-formed for its kind",
         r"""SELECT count(*), string_agg(kind || ':' || value_norm, ', ')
            FROM (SELECT kind, value_norm FROM staging.contact_points
-                 WHERE (kind = 'phone'   AND value_norm !~ '^0[1-9][0-9]{8}$')
+                 WHERE verdict IS DISTINCT FROM 'malformed'   -- kept AS the defect, on purpose
+                   AND ((kind = 'phone'   AND value_norm !~ '^0[1-9][0-9]{8}$')
                     OR (kind = 'email'   AND value_norm !~ '^[^@[:space:]]+@[^@[:space:]]+\.[a-z]{2,}$')
                     OR (kind = 'website' AND value_norm !~ '^[a-z0-9.-]+\.[a-z]{2,}$')
-                    OR (kind IN ('facebook','instagram','linkedin') AND value_norm !~ '^https?://')
+                    OR (kind IN ('facebook','instagram','linkedin') AND value_norm !~ '^https?://'))
                  LIMIT 20) x""",
         lambda v: v == 0, "FAIL",
         "M4: value_norm is the join key across sources; an unnormalised value "

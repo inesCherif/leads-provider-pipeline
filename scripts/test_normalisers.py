@@ -30,7 +30,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
 
 from ingest_lib import (                        # noqa: E402
     classify_email, clean_department, clean_phone, clean_postal_code, clean_siren,
-    dialable_first,
+    dialable_first, name_evidence,
     clean_siret, luhn_ok, normalize_status, repair_email_domain, siret_to_siren,
     truncated_identifier,
 )
@@ -224,6 +224,21 @@ check("surtaxé pushed last, source order kept otherwise",
 check("only a surtaxé line -> still returned (flagged), never dropped",
       dialable_first([("TELEPHONE", "08 10 00 63 26", True)]),
       [("TELEPHONE", "08 10 00 63 26", True)])
+
+print("\nname_evidence — an enriched SIREN needs a name in common (M4-4c)")
+check("registry name shares a token with the business",
+      name_evidence("MAISON DASTRU", "PATISSERIE DASTRU", "DASTRU HUGUES"), True)
+check("shares a token with the manager only", name_evidence("SCI BOUISSOU", "FREDERIC BOUISSOU", None), True)
+check("accents folded before comparing", name_evidence("BOULANGERIE THÉVENOT", "Boulangerie Thevenot"), True)
+check("commune vs a bakery in another dept -> no evidence",
+      name_evidence("COMMUNE DE VERSEILLES LE BAS", "GABRIEL VERDY", None), False)
+check("franchise trade name vs holding -> no evidence (only used without a SIRET)",
+      name_evidence("SASHEL", "U EXPRESS", "KAPUT REYNALD"), False)
+check("short tokens (SAS, DE, LE) never count", name_evidence("SAS DE LA", "LA SAS"), False)
+check("provider token inside the registry name counts too (VIOLET / LES VIOLETTES)",
+      name_evidence("LES VIOLETTES  LES VIOLETTES", "VIOLET", None), True)
+check("HYPER U vs CARGLASS -> no evidence", name_evidence("CARGLASS S.A.S.", "HYPER U", "DUPONT JEAN"), False)
+check("empty registry name -> False", name_evidence(None, "X"), False)
 
 # ── summary ──────────────────────────────────────────────────────────────────
 print("\n" + "-" * 70)
