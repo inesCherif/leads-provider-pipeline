@@ -113,11 +113,19 @@ def _pre_boulang_keys(n, raw):
     keep = next((c for c in cands if c and siren and c[:9] == siren), None)
     if keep is None and siren is None:
         keep = cands[0]                      # 8-digit siren_enrichi: fall back to the file's SIRET
+    if keep is None and cands[0] and siren and cands[0][:9] != siren:
+        # The provider's OWN SIRET contradicts the enriched SIREN (31 rows
+        # measured: 'DREAMS DONUTS AGEN' enriched to 'DREAM DECO'; a baker
+        # under an older SIREN). The provider's identifier is what it knew
+        # about THIS row; the enrichment is a name lookup. Keep the former.
+        n.setdefault("_extra_attrs", {})["siren_enrichi_conflict"] = siren
+        n["legal_name"] = None
+        keep, siren = cands[0], cands[0][:9]
     # An enriched SIREN with no provider SIRET behind it must carry NAME
     # evidence, or it is a lookup we cannot audit (160/10,685 measured; one
     # was a bakery attached to a commune). Unverified -> no-SIREN path, the
     # value kept in attrs for a later registry check.
-    if siren and cands[0] is None and siren not in _VERIFIED_SIRENS:
+    if siren and cands[0] is None and not _row_verified(siren, raw):
         n.setdefault("_extra_attrs", {}).update(
             {"siren_enrichi_unverified": siren, "siret_enrichi_unverified": keep})
         n["legal_name"] = None               # the registry name belongs to that other entity
@@ -135,37 +143,50 @@ PRE_CLEAN = {
     "boulang_keys":     _pre_boulang_keys,
 }
 
-_VERIFIED_SIRENS: set = set()
+_VERIFIED_ROWS: dict = {}     # siren -> [provider names of rows with their OWN evidence]
 
 
-def _frame_boulang_verified_sirens(df):
-    """Evidence is judged per SIREN across the WHOLE file, not per row: a chain
-    (one SIREN, 19 rows) is vindicated by any row whose provider SIRET agrees
-    or whose names share a token with the registry denomination. Measured
-    2026-09-07: 122 rows / 101 companies unverifiable, 12 of which had another
-    row with evidence and were wrongly unlinked by a per-row rule."""
-    _VERIFIED_SIRENS.clear()
+def _own_evidence(siren: str, r) -> bool:
+    """The row itself corroborates its enriched SIREN: the provider's own SIRET
+    agrees, or is a truncated one (the enrichment started from an identifier,
+    not from a name lookup), or the names share a token with the registry."""
+    own = clean_siret(r.get("SIRET"))
+    if own and own[:9] == siren:
+        return True
+    if truncated_identifier(r.get("SIRET")):
+        return True
+    return name_evidence(r.get("denomination_enrichi"), r.get("SOCIETE"),
+                         r.get("DIRIGEANT"), r.get("dirigeants_enrichi"))
+
+
+def _frame_boulang_verified_rows(df):
+    """Collect, per SIREN, the names of the rows that carry their OWN evidence.
+    A row without evidence is vindicated by a chain-mate ONLY if it shares a
+    name token with one of those rows (CARREFOUR CITY × 19: yes) — never by
+    the SIREN alone. Measured 2026-09-07: 18 unrelated bakeries had been
+    enriched to SIREN 892972878, a company whose registry name is literally
+    'LES'; one genuine row on that SIREN must not vindicate the other 17."""
+    _VERIFIED_ROWS.clear()
     for _, r in df.iterrows():
         siren = clean_siren(r.get("siren_enrichi"))
-        if not siren:
-            continue
-        own = clean_siret(r.get("SIRET"))
-        # A truncated (13-digit) provider SIRET still means the provider HAD an
-        # identifier, so the enrichment started from it, not from a name
-        # lookup: that is corroboration even when the padding does not match.
-        trunc = truncated_identifier(r.get("SIRET"))
-        if (own and own[:9] == siren) or trunc or name_evidence(
-                r.get("denomination_enrichi"), r.get("SOCIETE"), r.get("DIRIGEANT"),
-                r.get("dirigeants_enrichi")):
-            _VERIFIED_SIRENS.add(siren)
+        if siren and _own_evidence(siren, r):
+            _VERIFIED_ROWS.setdefault(siren, []).append(
+                " ".join(str(x) for x in (r.get("SOCIETE"), r.get("DIRIGEANT")) if x))
     return df
+
+
+def _row_verified(siren: str, raw) -> bool:
+    if _own_evidence(siren, raw):
+        return True
+    mine = " ".join(str(x) for x in (raw.get("SOCIETE"), raw.get("DIRIGEANT")) if x)
+    return any(name_evidence(mine, mate) for mate in _VERIFIED_ROWS.get(siren, []))
 
 
 # Frame-level hooks (after the raw landing, before normalisation).
 PRE_FRAME = {
     # 896 exact duplicate rows; (name, zipcode, phone) is the listing identity.
     "viticulteur_pj": lambda df: df.drop_duplicates(subset=["name", "zipcode", "phone"]),
-    "boulang_keys":   _frame_boulang_verified_sirens,
+    "boulang_keys":   _frame_boulang_verified_rows,
 }
 
 
