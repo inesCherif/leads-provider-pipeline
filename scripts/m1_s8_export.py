@@ -72,7 +72,14 @@ logging.basicConfig(
 )
 log = logging.getLogger("m1_s8")
 
-SECTOR_SLUG = "agriculture"
+sys.path.insert(0, str(PROJECT_ROOT))
+from config.sector_rules import DEFAULT_SECTOR, SECTORS, get_sector   # noqa: E402
+
+# File-name slug per rule-set key. Agriculture keeps its historical name so
+# exports/agriculture_{email,phone}.* stay where the client expects them;
+# every other sector writes under exports/<slug>/.
+SECTOR_SLUGS = {"agriculture_livestock": "agriculture"}
+SECTOR_SLUG = "agriculture"          # set from --sector in main()
 
 # ─── Output columns ───────────────────────────────────────────────────────────
 # (view column, client-facing header). French headers: the client works in French
@@ -231,7 +238,8 @@ def _raw_value(row: dict, col: str) -> str:
 SELECT_SQL = """
 SELECT *
 FROM public.v_deliverable_businesses
-WHERE (%(tier)s IS NULL OR tier = %(tier)s)
+WHERE primary_sector = ANY(%(sources)s)
+  AND (%(tier)s IS NULL OR tier = %(tier)s)
   AND (%(departments)s IS NULL OR department_code = ANY(%(departments)s))
   AND (NOT %(exclude_closed)s OR NOT source_closed)
   AND (NOT %(exclude_liquidation)s OR NOT in_liquidation)
@@ -280,7 +288,7 @@ def connect(attempts: int = 4):
 
 def fetch(tier: str, departments: list[str] | None,
           exclude_closed: bool = False, exclude_liquidation: bool = False,
-          attempts: int = 4) -> list[dict]:
+          attempts: int = 4, sources: list[str] | None = None) -> list[dict]:
     """Run the selection, reconnecting if the pooler drops us mid-query.
 
     Retrying the *connection* is not enough: this query scans ~100k rows and the
@@ -296,7 +304,8 @@ def fetch(tier: str, departments: list[str] | None,
                 cur.execute(SELECT_SQL,
                             {"tier": TIER_ARG[tier], "departments": departments,
                              "exclude_closed": exclude_closed,
-                             "exclude_liquidation": exclude_liquidation})
+                             "exclude_liquidation": exclude_liquidation,
+                             "sources": sources or list(get_sector(DEFAULT_SECTOR)["source_sectors"])})
                 return [dict(r) for r in cur.fetchall()]
         except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
             if attempt == attempts:
@@ -446,7 +455,16 @@ def main() -> None:
                     help="report the counts, write no files")
     ap.add_argument("--out-dir", default=str(PROJECT_ROOT / "exports"),
                     help="output directory (default: exports/)")
+    ap.add_argument("--sector", choices=sorted(SECTORS), default=DEFAULT_SECTOR,
+                    help="rule-set key; only businesses whose PRIMARY sector "
+                         "belongs to it are exported (default: agriculture)")
     args = ap.parse_args()
+
+    global SECTOR_SLUG
+    sector = get_sector(args.sector)
+    SECTOR_SLUG = SECTOR_SLUGS.get(sector["key"], sector["key"])
+    log.info("Sector: %s (primary_sector in %s) -> slug %s",
+             sector["key"], ", ".join(sector["source_sectors"]), SECTOR_SLUG)
 
     departments = None
     if args.department:
@@ -454,7 +472,8 @@ def main() -> None:
         log.info("Filtering to departments: %s", ", ".join(departments))
 
     rows = fetch(args.tier, departments, exclude_closed=args.exclude_closed,
-                 exclude_liquidation=args.exclude_liquidation)
+                 exclude_liquidation=args.exclude_liquidation,
+                 sources=list(sector["source_sectors"]))
 
     if args.limit:
         rows = rows[: args.limit]
@@ -471,6 +490,9 @@ def main() -> None:
         return
 
     out_dir = Path(args.out_dir)
+    if sector["key"] != DEFAULT_SECTOR:
+        out_dir = out_dir / SECTOR_SLUG          # exports/<slug>/<slug>_email.xlsx
+        out_dir.mkdir(parents=True, exist_ok=True)
     formats = ["xlsx", "csv"] if args.format == "both" else [args.format]
     channels = [("email", email_rows), ("phone", phone_rows)]
 
