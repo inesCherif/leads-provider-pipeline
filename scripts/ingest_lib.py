@@ -185,7 +185,9 @@ def clean_postal_code(val) -> str | None:
     # Restore the leading zero Excel ate: 01250 stored as the number 1250.
     if s.isdigit() and len(s) == 4:
         s = s.zfill(5)
-    return s
+    # A shifted row puts a street in the CP column ('1 RUE PASTEUR' -> '1RUEP').
+    # Not a postcode: NULL, never the first five characters of something else.
+    return s if re.fullmatch(r"[0-9]{5}", s) else None
 
 
 def clean_department(val) -> str | None:

@@ -172,6 +172,9 @@ print("\nclean_postal_code — float artefact BEFORE the 5-char cut")
 check("'69007.0' -> 69007", clean_postal_code("69007.0"), "69007")
 check("'2988.0' -> 02988 (was 29880: dot removed then truncated)",
       clean_postal_code("2988.0"), "02988")
+check("a street in the CP column (shifted row) -> NULL, not '1RUEP'",
+      clean_postal_code("1 RUE PASTEUR"), None)
+check("3 digits -> NULL (not a postcode, not padded)", clean_postal_code("123"), None)
 check("'1250' -> 01250 (unchanged rule)", clean_postal_code("1250"), "01250")
 
 print("\nclean_department — 2/3 chars or nothing")
