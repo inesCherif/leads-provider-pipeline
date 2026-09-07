@@ -144,11 +144,127 @@ _AGRI = {
 }
 
 
+# ─── M4 sectors (added 2026-09-07) ────────────────────────────────────────────
+# NAF scopes below are PROPOSALS, flagged for Ines/Sam. Changing one is a
+# rule_version bump + one qualification run for that sector only.
+#
+# `include` / `exclude` are mandatory keys (m1_s5_qualify.rule_params reads them
+# unconditionally). A sector with no tier-2 exclusion vocabulary gets a regex
+# that can never match a real label.
+
+_NEVER = r"\ynever_matches_anything\y"
+
+# Ines's tier-1 file boulangeries dept 13 (registry deliverable) AND Mehdi's
+# nationwide provider file share this rule set: both carry sector='boulangerie'.
+# The provider file is measured contaminated (6820B SCIs, 0161Z farms, 5610C
+# restaurants) -- hence the hard excludes.
+_BOULANGERIE = {
+    "key": "boulangerie",
+    "rule_version": "boul-v1",
+    "source_sectors": ("boulangerie",),
+    "naf_prefixes_in_scope": ("10.71", "10.72"),
+    "naf_rescue_codes": (),
+    "naf_rescue_prefixes": (),
+    "naf_hard_exclude": ("84.11Z",),
+    "include": r"boulang|patiss|pâtiss|biscuit|viennoiserie|chocolat|pain\y|pains\y",
+    "exclude": r"\y(agence|immobili|sci\y|restaurant|bar\y|cafe|café)\y",
+}
+
+_IMPRIMERIE = {
+    "key": "imprimerie",
+    "rule_version": "impr-v1",
+    "source_sectors": ("imprimerie",),
+    "naf_prefixes_in_scope": ("18.1",),
+    "naf_rescue_codes": (),
+    "naf_rescue_prefixes": (),
+    "naf_hard_exclude": ("84.11Z",),
+    # The provider file has NO NAF and NO SIRET: every row is tier 2 on its
+    # label, which is the constant 'Imprimerie'.
+    "include": r"imprim|serigraph|sérigraph|reprograph",
+    "exclude": _NEVER,
+}
+
+_VITICULTURE = {
+    "key": "viticulture",
+    "rule_version": "viti-v1",
+    "source_sectors": ("viticulture",),
+    "naf_prefixes_in_scope": ("01.21", "11.02"),
+    "naf_rescue_codes": (),
+    "naf_rescue_prefixes": (),
+    "naf_hard_exclude": ("84.11Z",),
+    "include": r"viticult|vigneron|vignoble|\yvins?\y|chateau|château|\ycaves?\y|domaine",
+    "exclude": r"\y(negoce|négoce|caviste|bar\y|restaurant)\y",
+}
+
+# Mehdi's data_finale: one hospitality list (chambres d'hotes, gites, hotels,
+# residences, campings, centres equestres). Ines decided 2026-09-07: ONE sector,
+# sub-scope by NAF at export time.
+_TOURISME = {
+    "key": "tourisme",
+    "rule_version": "tour-v1",
+    "source_sectors": ("tourisme",),
+    "naf_prefixes_in_scope": ("55.",),
+    "naf_rescue_codes": ("85.51Z",),          # centres equestres, with a hospitality/leisure label
+    "naf_rescue_prefixes": ("93.1", "93.2", "68.20"),  # loisirs; 68.20 only with a hospitality label
+    "naf_hard_exclude": ("84.11Z",),
+    "include": (r"hotel|hôtel|gite|gîte|chambre|camping|residence|résidence|hebergement|"
+                r"hébergement|vacances|equestre|équestre|auberge|tourisme|caravan|mobil"),
+    "exclude": r"\y(syndic|copropriet|copropriét|immobili)\y",
+}
+
+# Agence Bio operators (dept 63 + 03), sector='agriculteurs_bio'. Deliberately
+# NOT added to _AGRI's source_sectors: the two agriculture datasets stay
+# separately scoped (different provenance, different deliverable).
+_AGRI_BIO = {
+    "key": "agriculteurs_bio",
+    "rule_version": "agribio-v1",
+    "source_sectors": ("agriculteurs_bio",),
+    "naf_prefixes_in_scope": _AGRI["naf_prefixes_in_scope"],
+    "naf_rescue_codes": _AGRI["naf_rescue_codes"],
+    "naf_rescue_prefixes": _AGRI["naf_rescue_prefixes"],
+    "naf_hard_exclude": _AGRI["naf_hard_exclude"],
+    "include": _AGRI["include"],
+    "exclude": _AGRI["exclude"],
+}
+
 SECTORS = {
-    _AGRI["key"]: _AGRI,
+    _AGRI["key"]:        _AGRI,
+    _BOULANGERIE["key"]: _BOULANGERIE,
+    _IMPRIMERIE["key"]:  _IMPRIMERIE,
+    _VITICULTURE["key"]: _VITICULTURE,
+    _TOURISME["key"]:    _TOURISME,
+    _AGRI_BIO["key"]:    _AGRI_BIO,
 }
 
 DEFAULT_SECTOR = _AGRI["key"]
+
+# ─── Per-sector quality bands (check_data_quality.py --sector) ────────────────
+# deliverable: (min, max) rows in v_deliverable_businesses carrying the sector.
+# dup_pct: (min, max) share of the sector's companies marked duplicate.
+# Agriculture's bands are MEASURED (90,102 rows, 4.72%). The others are
+# PROVISIONAL ceilings from the file profiles of 2026-09-07 and must be
+# tightened after each sector's first qualification run, exactly as
+# agriculture's were. A sector with 0 companies is skipped, not failed.
+SECTOR_BANDS = {
+    "agriculture_livestock": {"deliverable": (80_000, 100_000), "dup_pct": (3.0, 10.0)},
+    "boulangerie":           {"deliverable": (0, 13_000),  "dup_pct": (0.0, 15.0)},
+    "imprimerie":            {"deliverable": (0, 10_000),  "dup_pct": (0.0, 15.0)},
+    "viticulture":           {"deliverable": (0, 2_000),   "dup_pct": (0.0, 15.0)},
+    "tourisme":              {"deliverable": (0, 52_000),  "dup_pct": (0.0, 15.0)},
+    "agriculteurs_bio":      {"deliverable": (0, 2_300),   "dup_pct": (0.0, 15.0)},
+}
+
+
+def source_to_sector_key() -> dict:
+    """Map every staging.source_files.sector value to its rule-set key.
+    Fails loudly if two sectors claim the same source value."""
+    out = {}
+    for key, sec in SECTORS.items():
+        for src in sec["source_sectors"]:
+            if src in out and out[src] != key:
+                raise SystemExit(f"source sector '{src}' claimed by both {out[src]} and {key}")
+            out[src] = key
+    return out
 
 
 def get_sector(key: str | None = None) -> dict:
