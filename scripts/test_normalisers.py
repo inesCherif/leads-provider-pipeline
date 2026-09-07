@@ -30,6 +30,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
 
 from ingest_lib import (                        # noqa: E402
     classify_email, clean_department, clean_phone, clean_postal_code, clean_siren,
+    dialable_first,
     clean_siret, luhn_ok, normalize_status, repair_email_domain, siret_to_siren,
     truncated_identifier,
 )
@@ -213,6 +214,16 @@ check("legit '.paris' TLD ships", classify_email("a@boulangerie.paris")[1], "can
 check("legit 'me.com' ships", classify_email("a@me.com")[1], "candidate")
 check("two @ -> malformed", classify_email("a@b@c.fr")[1], "malformed")
 check("empty -> empty", classify_email("nan")[1], "empty")
+
+print("\ndialable_first — a premium-rate line never becomes phone_main")
+check("surtaxé pushed last, source order kept otherwise",
+      dialable_first([("TELEPHONE", "08 99 12 34 56", True), ("MOBILE", "06 11 22 33 44", False),
+                      ("PHONE_NUMBER", "04 91 00 00 00", False)]),
+      [("MOBILE", "06 11 22 33 44", False), ("PHONE_NUMBER", "04 91 00 00 00", False),
+       ("TELEPHONE", "08 99 12 34 56", True)])
+check("only a surtaxé line -> still returned (flagged), never dropped",
+      dialable_first([("TELEPHONE", "08 10 00 63 26", True)]),
+      [("TELEPHONE", "08 10 00 63 26", True)])
 
 # ── summary ──────────────────────────────────────────────────────────────────
 print("\n" + "-" * 70)

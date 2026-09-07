@@ -185,9 +185,11 @@ def normalize_rows(df, spec: dict, file_hash: str) -> list[dict]:
             if p and p not in seen:
                 seen.add(p)
                 phones.append((col, p, is_surtaxe(p)))
+        phones = dialable_first(phones)
         n["_phones"] = phones
-        n["phone_main"] = phones[0][1] if phones else None
-        n["phone_alt"]  = phones[1][1] if len(phones) > 1 else None
+        dialable = [p for _, p, s in phones if not s]      # surtaxé never reaches contacts
+        n["phone_main"] = dialable[0] if dialable else None
+        n["phone_alt"]  = dialable[1] if len(dialable) > 1 else None
 
         # e-mails
         emails = []

@@ -192,6 +192,17 @@ def clean_phone(raw) -> str | None:
     return normalize_fr_phone(d) or None
 
 
+def dialable_first(phones: list) -> list:
+    """Order (column, canonical, is_surtaxe) triples so that premium-rate
+    numbers come LAST, keeping source order otherwise. The loader takes
+    phone_main / phone_alt from the front and stops at the first surtaxé
+    entry, so a business whose only number is an 08 99 line ships with NO
+    dialled phone — the number stays in contact_points, flagged. Caught by
+    check_data_quality on the first M4 file: 34 imprimerie rows had an 08xx
+    line as phone_main while their own claim row said is_dialable = false."""
+    return sorted(phones, key=lambda t: bool(t[2]))
+
+
 def phone_digits(canonical: str | None) -> str | None:
     """'04 75 59 13 13' -> '0475591313' (the contact_points.value_norm)."""
     return re.sub(r"\D", "", canonical) if canonical else None
