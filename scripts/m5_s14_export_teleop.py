@@ -147,11 +147,17 @@ def build(dept: str, version: str) -> tuple[list[dict], Counter]:
         sirene_ok = r["statut_sirene"].startswith("actif")
         if sirene_ok and score >= 2 and not provider_only and not r["alerte"]:
             niveau = "Sûr"
-        elif score >= 1 or provider_only:
+        elif score >= 1:
             niveau = "Probable"
         else:
+            # a phone with no dated trace of activity at all stays in the full
+            # file — Maha asked for sure, a bare provider line is not that
             stats["dropped: no proof of activity"] += 1
             continue
+        # Contact = a person. When the registry only names a legal-entity
+        # officer (a holding, a SAS président that is a company) say so
+        # rather than printing a company name in the "Contact" column.
+        contact = clean(r["gerant"]) if (r.get("nom") or "").strip() else (f"(gérée par {clean(r['gerant'])})" if r["gerant"] else "")
         key = r["siret"] if len(r["siret"]) == 14 else f"X{r['siren']}"
         if key in kept:
             stats["merged: duplicate SIRET"] += 1
@@ -163,7 +169,7 @@ def build(dept: str, version: str) -> tuple[list[dict], Counter]:
             origin += f" — confirmé par {r['telephone_confirme_par'].split(' (')[0] if ' (' not in r['telephone_confirme_par'] else r['telephone_confirme_par'].split('(')[1].rstrip(')')}"
         kept[key] = {
             "Entreprise": clean(r["raisonSociale"]), "Type d'hébergement": r["type_final"] or "non typé",
-            "Contact": clean(r["gerant"]), "Téléphone": tel, "Origine du téléphone": origin,
+            "Contact": contact, "Téléphone": tel, "Origine du téléphone": origin,
             "E-mail": clean(r["email_final"]), "Statut e-mail": email_status_fr(r["email_statut"]) if r["email_final"] else "",
             "Adresse": clean(r["adresse"]), "Code postal": clean(r["codePostal"]), "Ville": clean(r["ville"]),
             "Capacité / emplacements": cap, "Classement / labels": clean(labels)[:200], "Site web": clean(r["website_final"]),
