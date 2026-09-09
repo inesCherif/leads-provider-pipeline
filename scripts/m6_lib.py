@@ -57,13 +57,9 @@ OUT_DIR = PROJECT_ROOT / "exports" / SECTOR
 QUOTA_PATH = PROJECT_ROOT / "exports" / "boulangerie" / "checkpoints" / "search_quota.json"
 # M3AG harvests, read in place (never copied, never written to from M6).
 INHERITED_DIR = PROJECT_ROOT / "exports" / "agriculteurs" / "checkpoints"
-# Files Maha already holds — exclusion list for the call sheet.
-SENT_FILES = (
-    PROJECT_ROOT / "exports" / "agriculteurs" / "agriculteurs_63_teleop_v1.xlsx",
-    PROJECT_ROOT / "exports" / "agriculteurs" / "agriculteurs_03_teleop_v1.xlsx",
-    PROJECT_ROOT / "exports" / "hebergement" / "hebergement_63_teleop_v1.xlsx",
-    PROJECT_ROOT / "exports" / "hebergement" / "hebergement_03_teleop_v1.xlsx",
-)
+# Files Maha already holds — exclusion list for the call sheet: every xlsx
+# in exports/maha_sent/ (any sector, any version). See scripts/maha_lib.py.
+from maha_lib import SENT_DIR as MAHA_SENT_DIR, load_sent, sent_files   # noqa: E402,F401
 
 DEPARTEMENTS = ("03", "63")
 NAF_SCOPE = {"01.41Z", "01.42Z", "01.43Z", "01.44Z", "01.45Z", "01.46Z", "01.47Z", "01.49Z", "01.50Z"}
@@ -295,37 +291,6 @@ def load_matches(dept: str) -> dict[str, list[dict]]:
     for m in read_csv(p):
         out.setdefault(m["row_id"], []).append(m)
     return out
-
-
-def load_sent() -> tuple[set, set]:
-    """(sirets, phone_digits) present in every file Maha already received.
-    Reads the xlsx BACK (every sheet), never a log. Missing file = hard stop:
-    the exclusion is the whole point."""
-    from openpyxl import load_workbook
-    sirets, phones = set(), set()
-    for path in SENT_FILES:
-        if not path.exists():
-            sys.exit(f"{path} missing — cannot build the 'already sent' exclusion list.")
-        wb = load_workbook(path, read_only=True, data_only=True)
-        for ws in wb.worksheets:
-            rows = ws.iter_rows(values_only=True)
-            header = next(rows, None)
-            if not header:
-                continue
-            cols = {str(h or "").strip().lower(): i for i, h in enumerate(header)}
-            i_siret = cols.get("siret")
-            i_tel = next((i for h, i in cols.items() if h.startswith("t") and "phone" in h), None)
-            for r in rows:
-                if i_siret is not None and i_siret < len(r) and r[i_siret]:
-                    s = re.sub(r"\D", "", str(r[i_siret]))
-                    if len(s) == 14:
-                        sirets.add(s)
-                if i_tel is not None and i_tel < len(r) and r[i_tel]:
-                    d = phone_digits(str(r[i_tel]))
-                    if d:
-                        phones.add(d)
-        wb.close()
-    return sirets, phones
 
 
 # ---------------------------------------------------------------- selftest

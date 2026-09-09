@@ -108,6 +108,9 @@ def email_status_fr(statut: str) -> str:
             "non verifie": "non vérifié"}.get(statut, "non vérifié")
 
 
+SENT_SIRETS, SENT_PHONES = load_sent()
+
+
 def build(dept: str, version: str) -> tuple[list[dict], Counter]:
     src = OUT_DIR / f"eleveurs_{dept}_{version}.csv"
     if not src.exists():
@@ -127,8 +130,13 @@ def build(dept: str, version: str) -> tuple[list[dict], Counter]:
         if not tel:
             stats["dropped: no phone"] += 1
             continue
-        if r["deja_envoye"]:
-            stats[f"dropped: already sent to Maha ({r['deja_envoye']})"] += 1
+        # The "never twice" rule, checked LIVE against exports/maha_sent/ (the
+        # deja_envoye column of the full file is only as fresh as m6_s9's run).
+        if r["deja_envoye"] or (len(r["siret"]) == 14 and r["siret"] in SENT_SIRETS):
+            stats["dropped: already sent to Maha (siret)"] += 1
+            continue
+        if phone_digits(tel) in SENT_PHONES:
+            stats["dropped: already sent to Maha (telephone)"] += 1
             continue
         if r["flag_animaux_compagnie"] == "1":
             stats["dropped: pet trade (dogs / cats)"] += 1
@@ -240,7 +248,7 @@ def gate(xlsx_path: Path, dept: str, version: str, expected: int) -> int:
                   if r.get("kind") == "email" and r.get("verdict") in ("invalid", "invalide", "malformed")}
     full_rows = read_csv(OUT_DIR / f"eleveurs_{dept}_{version}.csv", delim=",")
     full = {r["siret"]: r for r in full_rows if len(r["siret"]) == 14}
-    sent_sirets, sent_phones = load_sent()
+    sent_sirets, sent_phones = SENT_SIRETS, SENT_PHONES
     fails = []
 
     def check(cond, label):

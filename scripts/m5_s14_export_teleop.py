@@ -47,6 +47,7 @@ from m1_s8_export import ILLEGAL_XML                                   # noqa: E
 from m2lib_contact import is_surtaxe, plausible_fr_number, FREE_MAIL   # noqa: E402
 from m3ag_s12_check import PHONE_RE, EMAIL_RE, MAIRIE_RE, EXTRA_FREE_MAIL, load_xlsx  # noqa: E402
 from m5_lib import CHECK_DIR, OUT_DIR, read_csv, is_aggregator, PHONE_SOURCE_FR  # noqa: E402
+from maha_lib import load_sent, phone_digits                          # noqa: E402  the "never twice" rule
 
 COLUMNS = ["Entreprise", "Type d'hébergement", "Contact", "Téléphone", "Origine du téléphone",
            "E-mail", "Statut e-mail", "Adresse", "Code postal", "Ville",
@@ -114,6 +115,9 @@ def email_status_fr(statut: str) -> str:
             "non verifie": "non vérifié"}.get(statut, "non vérifié")
 
 
+SENT_SIRETS, SENT_PHONES = load_sent()
+
+
 def build(dept: str, version: str) -> tuple[list[dict], Counter]:
     src = OUT_DIR / f"hebergement_{dept}_{version}.csv"
     if not src.exists():
@@ -130,6 +134,14 @@ def build(dept: str, version: str) -> tuple[list[dict], Counter]:
                 tel, tel_src, provider_only = m.group(1), "provider", "1"
         if not tel:
             stats["dropped: no phone"] += 1
+            continue
+        # Ines's rule (2026-09-09): never a row Maha already received, in any
+        # file of any sector or version — a V2 holds only the new companies.
+        if len(r["siret"]) == 14 and r["siret"] in SENT_SIRETS:
+            stats["dropped: already sent to Maha (siret)"] += 1
+            continue
+        if phone_digits(tel) in SENT_PHONES:
+            stats["dropped: already sent to Maha (telephone)"] += 1
             continue
         if r["flag_public"] == "1":
             stats["dropped: public operator (phase 2)"] += 1
@@ -282,6 +294,9 @@ def gate(xlsx_path: Path, dept: str, version: str, expected: int) -> int:
         if not m or f"{m.group(3)}-{m.group(2)}-{m.group(1)}" > today or not m.group(4).startswith("https://"):
             bad_ann.append(a)
     check(not bad_ann, f"T15 Dernière annonce dated ≤ today with an https URL ({len(bad_ann)})")
+    dup_s = [s for s in sirets if s in SENT_SIRETS]
+    dup_p = [g(r, "Téléphone") for r in rows if phone_digits(g(r, "Téléphone")) in SENT_PHONES]
+    check(not dup_s and not dup_p, f"T16 no SIRET / phone already in a file sent to Maha ({len(dup_s)} SIRET, {len(dup_p)} phones)")
     type_col = "Type d'hébergement"
     print(f"  info  Contact filled: {sum(1 for r in rows if g(r, 'Contact'))}/{len(rows)}; e-mail: {len(mails)} "
           f"({Counter(g(r, 'Statut e-mail') for r in rows if g(r, 'E-mail')).most_common()}); "
