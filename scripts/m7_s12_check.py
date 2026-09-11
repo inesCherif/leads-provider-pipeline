@@ -133,12 +133,13 @@ def main() -> None:
                       if any(r["telephone_final"] == t and r["source_telephone"] != "agencebio" for r in rows)}
     check(not shared_tel_dir, f"H8 no directory phone on > 2 operators ({len(shared_tel_dir)})")
 
+    # H9 counts SIRENs, not SIRETs: two établissements of one legal unit may share a site
     by_site = defaultdict(set)
     for r in rows:
         if r["website_final"] and r["source_website"] != "agencebio":
-            by_site[root_domain(str(r["website_final"]).replace("https://", "").replace("http://", "").split("/")[0].lower())].add(key(r))
+            by_site[root_domain(str(r["website_final"]).replace("https://", "").replace("http://", "").split("/")[0].lower())].add(g(r, "siren") or key(r))
     shared_site = {d: s for d, s in by_site.items() if len(s) > 1}
-    check(not shared_site, f"H9 no discovered website on > 1 operator ({len(shared_site)}: {list(shared_site)[:3]})")
+    check(not shared_site, f"H9 no discovered website on > 1 legal unit ({len(shared_site)}: {list(shared_site)[:3]})")
 
     # ---- M7 checks ----
     empty_seg = [r for r in rows if not g(r, "sous_segment").strip()]

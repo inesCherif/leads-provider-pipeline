@@ -107,7 +107,9 @@ AGRI_AGGREGATORS = tuple(_M2_AGGREGATORS) + (
     "societeinfo", "data-prospection", "lavieduvillage", "annuaire-entreprises",
     "verif.com", "kbis", "greffe", "rne.", "inpi.fr", "opendatasoft",
     "lamontagne.fr", "la-montagne", "leprogres", "lepopulaire", "lejdc",
-    "bfmtv", "france3", "francebleu", "ici.fr", "20minutes", "ouest-france",
+    # "ici.fr" (France Bleu's new domain) is NOT listed: as a substring it
+    # matched adeuxpainsdici.fr, a farm bakery (m7 gate, 2026-09-11)
+    "bfmtv", "france3", "francebleu", "20minutes", "ouest-france",
 
     "agencebio", "bienvenue-a-la-ferme", "marches-producteurs",
     "jours-de-marche", "annuaire-mairie", "118712", "118000", "kelbio",

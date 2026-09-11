@@ -392,6 +392,19 @@ def main() -> None:
             r["emails_autres"] = "|".join(x for x, _ in alt[1:4])
     for r in rows:
         r.pop("_uniq", None)
+    # ---- a discovered website on two different SIRENs is a shared / network
+    # site, not either farm's own (H9); two établissements of ONE legal unit may
+    # share it ----
+    site_sirens = defaultdict(set)
+    for r in rows:
+        if r["website_final"] and r["source_website"] != "agencebio":
+            site_sirens[root_domain(r["website_final"].split("//")[-1].split("/")[0].lower())].add(r["siren"])
+    for r in rows:
+        if r["website_final"] and r["source_website"] != "agencebio":
+            d = root_domain(r["website_final"].split("//")[-1].split("/")[0].lower())
+            if len(site_sirens[d]) > 1:
+                stats[f"site withheld: shared by {len(site_sirens[d])} SIRENs ({d})"] += 1
+                r["website_final"], r["source_website"], r["site_confiance"] = "", "", ""
     n_reg = len(rows)
 
     # ---- the éleveurs (M6 full export), appended minus porcins / pets ----
@@ -425,9 +438,17 @@ def main() -> None:
             stats["eleveurs rows appended"] += 1
 
     # ---- Sans SIRET sheet ----
+    # a listing whose phone or e-mail is already on a matched row IS that
+    # business (another directory named it): never a second row
+    main_phones = {phone_digits(r["telephone_final"]) for r in rows if r["telephone_final"]}
+    main_mails = {r["email_final"].lower() for r in rows if r["email_final"]}
     sans = []
     seen_key = set()
     for u in read_csv(CHECK_DIR / f"unmatched_{dept}.csv"):
+        if (phone_digits(nphone(u.get("phone")) or "") in main_phones and nphone(u.get("phone"))) or \
+           ((u.get("email") or "").lower().strip() in main_mails and (u.get("email") or "").strip()):
+            stats["sans siret dropped: phone / e-mail already on a matched row"] += 1
+            continue
         if listing_excluded(u["name"], u["categorie"], u["website"], u["email"], u["description"]):
             stats["sans siret dropped: principle"] += 1
             continue
