@@ -46,8 +46,17 @@ PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
 from m6_lib import CHECK_DIR, INHERITED_DIR, M6_STOPWORDS   # noqa: E402
 
+# M7 (producteurs) harvests, read in place — Sam 2026-09-11: "des sites
+# regroupent les éleveurs également". Same listing schema as BAF + 4 cols.
+M7_DIR = PROJECT_ROOT / "exports" / "producteurs" / "checkpoints"
 SOURCES = [
     (CHECK_DIR / "pj_listings.csv",            "pagesjaunes",     ";"),
+    (M7_DIR / "aas_listings.csv",              "acheteralasource", ";"),
+    (M7_DIR / "pd_listings.csv",               "producteur_direct", ";"),
+    (M7_DIR / "fl_listings.csv",               "fermes_locales",  ";"),
+    (M7_DIR / "jdm_listings.csv",              "jours_de_marche", ";"),
+    (M7_DIR / "bf_listings.csv",               "bonfromager",     ";"),
+    (M7_DIR / "dnf_listings.csv",              "denosfermes63",   ";"),
     (INHERITED_DIR / "pj_listings.csv",        "pagesjaunes",     ";"),
     (INHERITED_DIR / "osm_listings.csv",       "osm",             ";"),
     (INHERITED_DIR / "baf_listings.csv",       "bienvenue_ferme", ";"),
@@ -227,6 +236,8 @@ def detail_of(L: dict, src: str) -> str:
                 f"siren={L.get('siren','')}; file={L.get('source_file','')}")
     if src == "pagesjaunes":
         return f"category={L.get('category','')}"
+    if src in ("acheteralasource", "producteur_direct", "fermes_locales", "jours_de_marche", "bonfromager", "denosfermes63"):
+        return f"contact={L.get('alt_name','')}; categorie={L.get('categorie','')[:100]}; description={L.get('description','')[:200]}"
     return ""
 
 
