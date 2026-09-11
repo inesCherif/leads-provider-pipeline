@@ -477,6 +477,13 @@ def main() -> None:
         if e and verified.get(e) == "invalide":
             e = ""
             stats["sans siret: e-mail withheld invalide"] += 1
+        if e and e in main_mails:
+            # the listing's own site names an address a matched row already ships: same business
+            stats["sans siret dropped: site e-mail already on a matched row"] += 1
+            continue
+        if tel and phone_digits(tel) in main_phones:
+            stats["sans siret dropped: site phone already on a matched row"] += 1
+            continue
         if tel and phone_digits(tel) in sent_phones:
             stats["sans siret dropped: phone already sent to Maha"] += 1
             continue
