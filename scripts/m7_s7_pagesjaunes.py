@@ -47,10 +47,16 @@ from m7_lib import CHECK_DIR, INHERITED_AGRI, INHERITED_ELEVEURS     # noqa: E40
 # answers 404 once and is recorded, never retried (the m2-s25 lesson: the
 # cards-vs-404 verdict decides, not intuition). No vins / cidre / brasserie /
 # charcuterie slug — the principle.
+#
+# Measured on dept 63 (2026-09-11 18:30): a slug PJ does not know is NOT a 404 —
+# PJ runs it as a free-text search and returns whatever carries the word
+# (`moulins` → nurses at "Les Moulins", the paper-mill museum, gîtes, 666
+# advertised; `huilerie` / `miel` → épiceries fines). Those three are out;
+# m7_s8 also keeps only agricultural PJ categories (PJ_CATEGORY_OK_RE).
 M7_WHATS = ("travaux-agricoles,exploitation-agricole,produits-fermiers-vente-directe,"
             "pepinieristes,horticulteurs,laiteries,fromageries,fabrication-de-fromages,"
-            "cooperatives-laitieres,miel,apiculture,industrie-agroalimentaire,minoteries,"
-            "moulins,huilerie,pisciculture,producteur-de-fruits,maraicher-bio,apiculteurs-bio,"
+            "cooperatives-laitieres,apiculture,industrie-agroalimentaire,minoteries,"
+            "pisciculture,producteur-de-fruits,maraicher-bio,apiculteurs-bio,"
             "plantes-aromatiques,"
             # the four M3AG slugs were run for dept 63 only; dept 03 never got them
             "maraichers,producteurs-de-fruits-et-legumes,apiculteurs,fromagers")

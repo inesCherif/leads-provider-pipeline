@@ -69,6 +69,18 @@ M7_SOURCES = {"acheteralasource", "producteur_direct", "fermes_locales", "jours_
 PJ_SEEN: set = set()
 # db_claims sources that never become a witness here (same rule as m6_s8)
 CLAIM_SKIP = {"deliverable", "validator"}
+# Pages Jaunes prints its own category on every card. The M7 trade-slug run
+# (m7_s7, 2026-09-11) showed PJ answering an unknown slug with a free-text
+# search (nurses at "Les Moulins", épiceries fines for `huilerie`), so a PJ
+# card is a witness here only when its category is agricultural / food
+# producing. A PJ row with no category (older harvests) is kept as before.
+PJ_CATEGORY_OK_RE = re.compile(
+    r"AGRICOL|AGRICULT|EXPLOITATION|ELEVAGE|ÉLEVAGE|ELEVEUR|ÉLEVEUR|FERMIER|FERME\b|VENTE DIRECTE|"
+    r"MARA[IÎ]CH|ARBORICULT|FRUITS|L[EÉ]GUMES|P[EÉ]PINI|HORTICULT|JARDINERIE|V[EÉ]G[EÉ]TAUX|"
+    r"LAITI|LAITERIE|FROMAG|MINOTERIE|MEUNERIE|MOULIN|HUILES|HUILERIE|PISCICULT|AQUACULT|"
+    r"APICULT|MIEL|C[EÉ]R[EÉ]ALES|SEMENCES|PLANTES|AROMATIQ|VITICULT|COOP[EÉ]RATIVE AGRICOLE|"
+    r"PRODUCTEUR|PRODUITS LAITIERS|VOLAILLE|VIANDE|ABATTOIR|CONSERVE|JUS DE FRUITS|AGROALIMENTAIRE|"
+    r"PAINS|BOULANGERIE|CHARCUTERIE|VINS", re.I)   # the last four reach listing_excluded, which decides
 WEBSITE_OK_VERDICTS = {"valide", "valid"}
 
 
@@ -212,6 +224,11 @@ def load_listings(dept: str) -> tuple[list[dict], Counter]:
                     continue
                 if label == "provider":
                     r["categorie"] = r.get("label", "")     # the provider's Activité label faces the principle
+                if label == "pagesjaunes":
+                    r["categorie"] = r.get("category", "")  # PJ's own category faces the principle too
+                    if r["categorie"] and not PJ_CATEGORY_OK_RE.search(r["categorie"]):
+                        dropped["pagesjaunes: category not agricultural"] += 1
+                        continue
                 why = listing_excluded(r.get("name", ""), r.get("categorie", ""), r.get("website", ""),
                                        r.get("email", ""), r.get("description", ""))
                 if why:
