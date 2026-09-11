@@ -103,11 +103,18 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="fermes-locales.fr, national")
     ap.add_argument("--pilot", type=int, default=0)
     ap.add_argument("--dump", action="store_true")
+    ap.add_argument("--recheck-excluded", action="store_true",
+                    help="re-open the fiches marked done but absent from the listings file (excluded under an earlier rule, or fetch failures)")
     args = ap.parse_args()
     CHECK_DIR.mkdir(parents=True, exist_ok=True)
     sess = make_session()
     index = walk_index(sess)
     done = load_done(LIST_DONE)
+    if args.recheck_excluded:
+        written = {r["listing_id"] for r in read_csv(OUT_PATH)}
+        redo = {s for s in done if s not in written}
+        done -= redo
+        log.info(f"--recheck-excluded: {len(redo)} fiches re-opened under the current rules")
     todo = [r for r in index if r["slug"] not in done]
     if args.pilot:
         todo = todo[:args.pilot]
