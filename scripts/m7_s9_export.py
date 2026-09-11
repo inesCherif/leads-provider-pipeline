@@ -459,10 +459,24 @@ def main() -> None:
             stats["sans siret dropped: principle"] += 1
             continue
         e = (u.get("email") or "").lower().strip()
+        tel = nphone(u.get("phone")) or ""
+        # what the crawl of the listing's own website found (m7_s4 --unmatched),
+        # taken only when the site was validated for THIS listing
+        urid = f"U{u['source']}:{u['listing_id']}"
+        for c in site_contacts.get(urid, []):
+            if c.get("confiance") not in ("confirme", "probable"):
+                continue
+            ce = (c.get("email") or "").lower().strip()
+            if ce and not e and verified.get(ce) != "invalide" and not is_aggregator(ce.partition("@")[2]):
+                e = ce
+                stats["sans siret: e-mail from the listing's own site"] += 1
+            cp_ = nphone(c.get("phone")) or ""
+            if cp_ and not tel and not is_surtaxe(cp_):
+                tel = cp_
+                stats["sans siret: phone from the listing's own site"] += 1
         if e and verified.get(e) == "invalide":
             e = ""
             stats["sans siret: e-mail withheld invalide"] += 1
-        tel = nphone(u.get("phone")) or ""
         if tel and phone_digits(tel) in sent_phones:
             stats["sans siret dropped: phone already sent to Maha"] += 1
             continue
