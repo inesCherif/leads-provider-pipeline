@@ -111,6 +111,32 @@ def email_status_fr(statut: str) -> str:
 SENT_SIRETS, SENT_PHONES = load_sent()
 
 
+def also_exclude(paths: list[str]) -> None:
+    """Sheets built today but not yet registered (the producteurs sheets, M7) count
+    as sent: a phone must never sit on two sheets Maha receives together (copy of m7_s14)."""
+    for p in paths:
+        p = Path(p)
+        if not p.exists():
+            sys.exit(f"--also-exclude: {p} not found")
+        from openpyxl import load_workbook
+        wb = load_workbook(p, read_only=True)
+        n = 0
+        for ws in wb.worksheets:
+            it = ws.iter_rows(values_only=True)
+            header = [str(h or "").lower() for h in next(it, [])]
+            if "téléphone" not in header:
+                continue
+            ti, si = header.index("téléphone"), (header.index("siret") if "siret" in header else None)
+            for vals in it:
+                d = phone_digits(str(vals[ti] or ""))
+                if d:
+                    SENT_PHONES.add(d)
+                    n += 1
+                if si is not None and vals[si]:
+                    SENT_SIRETS.add(str(vals[si]))
+        log.info(f"--also-exclude {p.name}: {n} phones added to the never-twice list")
+
+
 def build(dept: str, version: str) -> tuple[list[dict], Counter]:
     src = OUT_DIR / f"eleveurs_{dept}_{version}.csv"
     if not src.exists():
@@ -304,8 +330,11 @@ def main() -> None:
     ap.add_argument("--departement", default="63")
     ap.add_argument("--version", default="v1", help="m6_s9 version to read")
     ap.add_argument("--out-version", default="v1")
+    ap.add_argument("--also-exclude", nargs="*", default=[],
+                    help="xlsx call sheets built today, not yet registered, whose phones / SIRETs must not reappear")
     args = ap.parse_args()
 
+    also_exclude(args.also_exclude)
     rows, stats = build(args.departement, args.version)
     xlsx_path = write(rows, args.departement, args.out_version)
     log.info("─" * 62)
