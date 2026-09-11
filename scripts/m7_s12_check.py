@@ -28,6 +28,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 from m2lib_contact import FREE_MAIL, is_surtaxe, plausible_fr_number   # noqa: E402
 from m3ag_s12_check import PHONE_RE, EMAIL_RE, MAIRIE_RE, EXTRA_FREE_MAIL   # noqa: E402
+from m3ag_lib import site_key                                             # noqa: E402
 from m7_lib import (OUT_DIR, CHECK_DIR, INHERITED_AGRI, INHERITED_ELEVEURS, read_csv,   # noqa: E402
                     is_aggregator, root_domain, EXCLUDED_NAF, EXCLUDED_RE, EXCLUDED_LOOSE_RE,
                     host_hits, phone_digits)
@@ -137,7 +138,7 @@ def main() -> None:
     by_site = defaultdict(set)
     for r in rows:
         if r["website_final"] and r["source_website"] != "agencebio":
-            by_site[root_domain(str(r["website_final"]).replace("https://", "").replace("http://", "").split("/")[0].lower())].add(g(r, "siren") or key(r))
+            by_site[site_key(str(r["website_final"]))].add(g(r, "siren") or key(r))
     shared_site = {d: s for d, s in by_site.items() if len(s) > 1}
     check(not shared_site, f"H9 no discovered website on > 1 legal unit ({len(shared_site)}: {list(shared_site)[:3]})")
 

@@ -76,11 +76,18 @@ M6_COLUMNS = ["type_elevage", "bio", "productions_bio", "siren", "denomination_l
               "telephone_confirme_par", "deja_envoye"]
 COLUMNS = M3AG_COLUMNS + M6_COLUMNS
 
-PHONE_RANK = ["agencebio", "osm", "bienvenue_ferme", "pagesjaunes", "google_panel",
+# The M7 direct-sales directories (2026-09-11) are owner-declared listings,
+# ranked with bienvenue-à-la-ferme, above Pages Jaunes (m7_s9 measures the
+# pairwise agreement; acheteralasource 90 % of 10, producteur.direct 77 % of 13).
+DIRECTORIES = ["jours_de_marche", "denosfermes63", "acheteralasource", "producteur_direct", "fermes_locales"]
+PHONE_RANK = ["agencebio", "osm", "bienvenue_ferme"] + DIRECTORIES + ["pagesjaunes", "google_panel",
               "site/confirme", "corrobore"]
-EMAIL_RANK = ["agencebio", "site/confirme", "site/probable", "bienvenue_ferme",
+EMAIL_RANK = ["agencebio", "jours_de_marche", "producteur_direct", "fermes_locales", "bonfromager",
+              "denosfermes63", "acheteralasource", "site/confirme", "site/probable", "bienvenue_ferme",
               "osm", "pagesjaunes", "provider", "site/non verifie", "snippet"]
-SITE_RANK = ["agencebio", "osm", "pagesjaunes", "bienvenue_ferme", "site/confirme", "crawl"]
+SITE_RANK = ["agencebio", "osm", "producteur_direct", "acheteralasource", "fermes_locales", "jours_de_marche",
+             "pagesjaunes", "bienvenue_ferme", "site/confirme", "crawl"]
+DIALABLE = set(PHONE_RANK)
 DB_VERDICT_FR = {"valid": "valide", "invalid": "invalide", "risky": "risque", "malformed": "invalide",
                  "valide": "valide", "invalide": "invalide", "risque": "risque"}
 
@@ -171,7 +178,7 @@ def main() -> None:
         cands = []          # dialable
         for src, mlist in ms.items():
             base = src.split("(")[0]
-            if base in ("agencebio", "osm", "bienvenue_ferme", "pagesjaunes", "google_panel", "site/confirme", "corrobore"):
+            if base in DIALABLE:
                 for m in mlist:
                     for p in (m.get("phone"), m.get("mobile")):
                         if nphone(p) and not is_surtaxe(nphone(p)):
@@ -287,16 +294,18 @@ def main() -> None:
         scands = []
         for src, mlist in ms.items():
             base = src.split("(")[0]
-            if base in ("agencebio", "osm", "pagesjaunes", "bienvenue_ferme", "site/confirme"):
+            if base in SITE_RANK:
                 for m in mlist:
                     if m.get("website") and not is_aggregator(m["website"]):
                         scands.append((m["website"], base))
+        # a `valide` crawl verdict counts whatever listing brought the domain
+        # (a later re-crawl of the same domain from a directory listing used
+        # to overwrite the search verdict and lose the site - V3 2026-09-11)
         for v in site_verdicts.get(rid, []):
-            if v["source"].startswith("search"):
-                if v["own"] in ("cp+nom", "nom_domaine", "cp") and not name_in(v["domain"]):
-                    stats["site withheld: probable, name not in domain"] += 1
-                    continue
-                scands.append((f"https://{v['domain']}", "crawl"))
+            if v["own"] in ("cp+nom", "nom_domaine", "cp") and not name_in(v["domain"]):
+                stats["site withheld: probable, name not in domain"] += 1
+                continue
+            scands.append((f"https://{v['domain']}", "crawl"))
         scands.sort(key=lambda x: rank(SITE_RANK, x[1]))
         site_final, site_src = (scands[0] if scands else ("", ""))
         conf = ""
@@ -429,6 +438,20 @@ def main() -> None:
             r["emails_autres"] = "|".join(x for x, _ in alt[1:4])
     for r in rows:
         r.pop("_uniq", None)
+    # ---- a discovered website on two different SIRENs is a shared / network
+    # site, not either farm's own (H9); two établissements of one legal unit
+    # may share it; hosted platforms are keyed on the full host (m3ag_lib.site_key) ----
+    from m3ag_lib import site_key
+    site_sirens = defaultdict(set)
+    for r in rows:
+        if r["website_final"] and r["source_website"] != "agencebio":
+            site_sirens[site_key(r["website_final"])].add(r["siren"] or r["siret"] or r["raisonSociale"])
+    for r in rows:
+        if r["website_final"] and r["source_website"] != "agencebio":
+            d = site_key(r["website_final"])
+            if len(site_sirens[d]) > 1:
+                stats[f"site withheld: shared by {len(site_sirens[d])} legal units ({d})"] += 1
+                r["website_final"], r["source_website"], r["site_confiance"] = "", "", ""
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     csv_path = OUT_DIR / f"eleveurs_{dept}_{args.version}.csv"

@@ -201,6 +201,21 @@ def root_domain(host: str) -> str:
     return ".".join(parts[-2:]) if len(parts) >= 2 else host
 
 
+# Hosting platforms: two farms on `a.blog4ever.com` and `b.blog4ever.com`
+# do not share a site. The sharing tests (export + gate H9) key on the full
+# host there, on the root domain everywhere else.
+HOSTED_PLATFORMS = ("blog4ever", "wordpress.com", "wixsite", "wix.com", "jimdo", "e-monsite",
+                    "webnode", "site123", "business.site", "sumupstore", "framasite", "over-blog",
+                    "canalblog", "pagesperso", "free.fr", "orange.fr", "monsite-orange", "weebly",
+                    "sitew", "blogspot", "google.com", "linktr.ee", "eklablog", "kingeshop", "shopify")
+
+
+def site_key(url_or_host: str) -> str:
+    """The identity of a website for 'shared by several businesses' tests."""
+    h = (url_or_host or "").lower().split("//")[-1].split("/")[0].replace("www.", "")
+    return h if any(p in h for p in HOSTED_PLATFORMS) else root_domain(h)
+
+
 def is_aggregator(url_or_host: str) -> bool:
     h = host_of(url_or_host) if "://" in (url_or_host or "") else (url_or_host or "").lower()
     if not h:
@@ -311,6 +326,8 @@ def _selftest() -> None:
     check("agri score", agri_score("Vente directe de fromages de chèvre bio à la ferme") >= 3, True)
     check("host_of", host_of("https://www.Ferme-X.fr/contact"), "ferme-x.fr")
     check("root", root_domain("shop.ferme-x.fr"), "ferme-x.fr")
+    check("site key root", site_key("https://www.shop.ferme-x.fr/contact"), "ferme-x.fr")
+    check("site key hosted", site_key("https://gaecdupre.blog4ever.com/"), "gaecdupre.blog4ever.com")
     print(f"selftest: {fails} failure(s)")
     sys.exit(1 if fails else 0)
 

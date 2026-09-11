@@ -157,12 +157,14 @@ def main() -> None:
         print(f"  info  H8 owner-declared phone on > 2 operators: "
               f"{[(t, len(s)) for t, s in list(shared_tel.items())[:3]]}")
 
+    # H9 counts legal units (SIREN), keyed on m3ag_lib.site_key (hosted platforms by full host)
+    from m3ag_lib import site_key
     by_site = defaultdict(set)
     for r in rows:
         if r["website_final"] and r["source_website"] != "agencebio":
-            by_site[root_domain(str(r["website_final"]).replace("https://", "").replace("http://", "").split("/")[0].lower())].add(key(r))
+            by_site[site_key(str(r["website_final"]))].add(str(r.get("siren") or "") or key(r))
     shared_site = {d: s for d, s in by_site.items() if len(s) > 1}
-    check(not shared_site, f"H9 no discovered website on > 1 operator ({len(shared_site)}: {list(shared_site)[:3]})")
+    check(not shared_site, f"H9 no discovered website on > 1 legal unit ({len(shared_site)}: {list(shared_site)[:3]})")
 
     n_tel, n_mail = len(tels), len(mails)
     n_site = sum(1 for r in rows if r["website_final"])

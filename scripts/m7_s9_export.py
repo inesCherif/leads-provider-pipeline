@@ -52,6 +52,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
 from m1_s8_export import ILLEGAL_XML                       # noqa: E402
 from m2lib_contact import normalize_fr_phone, is_surtaxe, FREE_MAIL   # noqa: E402
 from m3ag_s12_check import MAIRIE_RE, EXTRA_FREE_MAIL                 # noqa: E402
+from m3ag_lib import site_key                                          # noqa: E402
 from m7_lib import (CHECK_DIR, OUT_DIR, INHERITED_AGRI, INHERITED_ELEVEURS, read_csv,  # noqa: E402
                     name_tokens, root_domain, is_aggregator, is_junk_witness, strong_tokens,
                     JUNK_MAILBOX, phone_digits, load_sent, EXCLUDED_NAF, EXCLUDED_RE,
@@ -284,12 +285,12 @@ def main() -> None:
                 for m in mlist:
                     if m.get("website") and not is_aggregator(m["website"]):
                         scands.append((m["website"], base))
+        # a `valide` crawl verdict counts whatever listing brought the domain
         for v in site_verdicts.get(rid, []):
-            if v["source"].startswith("search"):
-                if v["own"] in ("cp+nom", "nom_domaine", "cp") and not name_in(v["domain"]):
-                    stats["site withheld: probable, name not in domain"] += 1
-                    continue
-                scands.append((f"https://{v['domain']}", "crawl"))
+            if v["own"] in ("cp+nom", "nom_domaine", "cp") and not name_in(v["domain"]):
+                stats["site withheld: probable, name not in domain"] += 1
+                continue
+            scands.append((f"https://{v['domain']}", "crawl"))
         scands.sort(key=lambda x: rank(SITE_RANK, x[1]))
         site_final, site_src = (scands[0] if scands else ("", ""))
         conf = ""
@@ -394,17 +395,21 @@ def main() -> None:
         r.pop("_uniq", None)
     # ---- a discovered website on two different SIRENs is a shared / network
     # site, not either farm's own (H9); two établissements of ONE legal unit may
-    # share it ----
-    site_sirens = defaultdict(set)
-    for r in rows:
-        if r["website_final"] and r["source_website"] != "agencebio":
-            site_sirens[root_domain(r["website_final"].split("//")[-1].split("/")[0].lower())].add(r["siren"])
-    for r in rows:
-        if r["website_final"] and r["source_website"] != "agencebio":
-            d = root_domain(r["website_final"].split("//")[-1].split("/")[0].lower())
-            if len(site_sirens[d]) > 1:
-                stats[f"site withheld: shared by {len(site_sirens[d])} SIRENs ({d})"] += 1
-                r["website_final"], r["source_website"], r["site_confiance"] = "", "", ""
+    # share it. Applied over the WHOLE file, so it runs again after the
+    # éleveurs rows are appended (a producteur and an éleveur shared
+    # coeur-de-fermier.com in the first V1 build) ----
+    def withhold_shared_sites() -> None:
+        site_sirens = defaultdict(set)
+        for r in rows:
+            if r["website_final"] and r["source_website"] != "agencebio":
+                site_sirens[site_key(r["website_final"])].add(r["siren"] or r["siret"])
+        for r in rows:
+            if r["website_final"] and r["source_website"] != "agencebio":
+                d = site_key(r["website_final"])
+                if len(site_sirens[d]) > 1:
+                    stats[f"site withheld: shared by {len(site_sirens[d])} legal units ({d})"] += 1
+                    r["website_final"], r["source_website"], r["site_confiance"] = "", "", ""
+    withhold_shared_sites()
     n_reg = len(rows)
 
     # ---- the éleveurs (M6 full export), appended minus porcins / pets ----
@@ -436,6 +441,7 @@ def main() -> None:
             rows.append(row)
             seen.add(e["siret"])
             stats["eleveurs rows appended"] += 1
+        withhold_shared_sites()
 
     # ---- Sans SIRET sheet ----
     # a listing whose phone or e-mail is already on a matched row IS that
