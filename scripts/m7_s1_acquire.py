@@ -44,13 +44,13 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
-from m7_lib import CHECK_DIR, DEPARTEMENTS, NAF_SCOPE, NAF_LABELS, NAF_TAG   # noqa: E402
+from m7_lib import CHECK_DIR, DEPARTEMENTS, NAF_SCOPE, NAF_LABELS, NAF_TAG, EXCLUDED_NAF   # noqa: E402
 
 API_BASE = "https://recherche-entreprises.api.gouv.fr/search"
 MAX_RESULTS_CAP = 10_000
-REQUEST_DELAY   = 0.4
+REQUEST_DELAY   = 0.7      # 0.4 hit HTTP 429 four times in a row on 2026-09-11
 REQUEST_TIMEOUT = 15
-RETRY_ATTEMPTS  = 4
+RETRY_ATTEMPTS  = 6
 RETRY_BACKOFF   = 3.0
 
 logging.basicConfig(level=logging.INFO,
@@ -219,6 +219,9 @@ def main() -> None:
         report(depts)
         return
     nafs = [n.strip() for n in args.naf.split(",") if n.strip()]
+    banned = sorted(set(nafs) & EXCLUDED_NAF)
+    if banned:
+        sys.exit(f"refusing to pull excluded NAF codes {banned} (m7_lib.EXCLUDED_NAF — Ines's principle)")
     for dept in depts:
         for i, naf in enumerate(nafs):
             run_dept(dept, naf, args.max_pages, args.fresh and i == 0)

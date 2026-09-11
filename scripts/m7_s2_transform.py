@@ -51,7 +51,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
 from scripts.m1_s4_sirene_enrich import LEGAL_FORM_CODES          # noqa: E402
 from scripts.m1_s8_export import EFFECTIF_LABEL, ILLEGAL_XML      # noqa: E402
 from m2_s2_transform import pick_dirigeant                        # noqa: E402
-from m7_lib import (CHECK_DIR, DEPARTEMENTS, NAF_SCOPE, NAF_LABELS,  # noqa: E402
+from m7_lib import (CHECK_DIR, DEPARTEMENTS, NAF_SCOPE, NAF_LABELS, EXCLUDED_NAF,  # noqa: E402
                     tag_from_naf, is_public)
 
 # m3ag_s2.COLUMNS verbatim, then the M6 column names (sous_segment where M6
@@ -114,6 +114,9 @@ def run_dept(dept: str, drop_naf: set) -> None:
                 c["dropped: outside dept"] += 1
                 continue
             naf = e.get("activite_principale") or unit_naf
+            if naf in EXCLUDED_NAF:
+                c["dropped: excluded on principle"] += 1
+                continue
             if naf not in NAF_SCOPE:
                 c["dropped: activity guard"] += 1
                 naf_rejected[naf] += 1
@@ -175,8 +178,8 @@ def run_dept(dept: str, drop_naf: set) -> None:
     guard_rate = c["dropped: activity guard"] / max(1, c["dropped: activity guard"] + kept)
     log.info("─" * 62)
     log.info(f"[{dept}] {c['units']} legal units, {c['etabs_seen']} établissements -> written={kept} -> {out.name}")
-    for k in ("dropped: closed etab", "dropped: outside dept", "dropped: activity guard",
-              "dropped: --drop-naf", "dropped: duplicate siret"):
+    for k in ("dropped: closed etab", "dropped: outside dept", "dropped: excluded on principle",
+              "dropped: activity guard", "dropped: --drop-naf", "dropped: duplicate siret"):
         log.info(f"[{dept}]   {k:<32} {c[k]:>5}")
     log.info(f"[{dept}]   activity-guard rate {guard_rate:.1%}  top rejected NAF {naf_rejected.most_common(5)}")
     log.info(f"[{dept}]   by NAF   {dict(Counter(r['codeNAF'] for r in rows).most_common())}")

@@ -22,6 +22,12 @@ What is specific to M7:
   * NAF_SCOPE = agriculture minus livestock (m6_lib.NAF_SCOPE), each code
     TAGGED with a `sous_segment` (Ines 2026-09-11: one file per dept, one
     row per SIRET, a Sous-segment column; several tags allowed).
+  * EXCLUDED_NAF / EXCLUDED_RE — Ines's principle (2026-09-11, overrides
+    Sam's list): NO ALCOHOL (vigne 01.21Z, vinification 11.02A/B, cidre
+    11.03Z, brasserie 11.05Z, every "vins" category, the wine directories)
+    and NO PORK-SPECIFIC code (charcuterie 10.13B, porcins 01.46Z). Never
+    pulled, never merged into Sam's file, never tagged. The m7_s12 gate
+    fails the build if one of them reaches the xlsx.
   * LISTING_FIELDS = the canonical listing schema of m3ag_s10_baf plus
     description / productions / categorie / siret, because Sam asked for
     the activity CONTEXT and some directories print the SIRET.
@@ -65,16 +71,23 @@ INHERITED_ELEVEURS = PROJECT_ROOT / "exports" / "eleveurs" / "checkpoints"
 
 DEPARTEMENTS = ("03", "63")
 
+# Excluded on principle (see docstring). Kept as data so every script can
+# assert against it: m7_s1 refuses to pull them, m7_s9 --with-eleveurs
+# drops M6 rows carrying them, m7_s12 fails on them.
+EXCLUDED_NAF = frozenset({"01.21Z", "11.02A", "11.02B", "11.03Z", "11.05Z", "10.13B", "01.46Z"})
+EXCLUDED_RE = re.compile(
+    r"VITICULT|VIGNERON|VIGNOBLE|VINIFI|\bVINS?\b|\bCAVE\b|CIDRE|BRASS|BI[EÈ]RE|CHARCUT|\bPORCS?\b|PORCIN|COCHON",
+    re.I)
+
 # NAF code -> (official label, sous_segment tag). Livestock (01.4x) is M6.
 # Codes with no French metropolitan relevance (riz, canne, tropicaux,
-# agrumes) are left out; brasseries (11.05Z) are not agriculture.
+# agrumes) are left out.
 NAF_SCOPE = {
     "01.11Z": ("Culture de céréales, légumineuses et graines oléagineuses", "grandes cultures"),
     "01.13Z": ("Culture de légumes, de melons, de racines et de tubercules", "maraîcher"),
     "01.15Z": ("Culture du tabac", "cultures"),
     "01.16Z": ("Culture de plantes à fibres", "cultures"),
     "01.19Z": ("Autres cultures non permanentes", "cultures"),
-    "01.21Z": ("Culture de la vigne", "vigneron"),
     "01.24Z": ("Culture de fruits à pépins et à noyau", "arboriculteur"),
     "01.25Z": ("Culture d'autres fruits d'arbres ou d'arbustes et de fruits à coque", "arboriculteur"),
     "01.26Z": ("Culture de fruits oléagineux", "arboriculteur"),
@@ -89,7 +102,6 @@ NAF_SCOPE = {
     "10.11Z": ("Transformation et conservation de la viande de boucherie", "transformation viande"),
     "10.12Z": ("Transformation et conservation de la viande de volaille", "transformation viande"),
     "10.13A": ("Préparation industrielle de produits à base de viande", "transformation viande"),
-    "10.13B": ("Charcuterie", "transformation viande"),
     "10.32Z": ("Préparation de jus de fruits et légumes", "transformation fruits-légumes"),
     "10.39A": ("Autre transformation et conservation de légumes", "transformation fruits-légumes"),
     "10.39B": ("Transformation et conservation de fruits", "transformation fruits-légumes"),
@@ -100,19 +112,18 @@ NAF_SCOPE = {
     "10.51D": ("Fabrication d'autres produits laitiers", "laiterie"),
     "10.61A": ("Meunerie", "meunerie"),
     "10.61B": ("Autres activités du travail des grains", "meunerie"),
-    "11.02A": ("Fabrication de vins effervescents", "vigneron"),
-    "11.02B": ("Vinification", "vigneron"),
-    "11.03Z": ("Fabrication de cidre et de vins de fruits", "cidre"),
 }
 NAF_LABELS = {k: v[0] for k, v in NAF_SCOPE.items()}
 NAF_TAG = {k: v[1] for k, v in NAF_SCOPE.items()}
+assert not (EXCLUDED_NAF & set(NAF_SCOPE)), "an excluded NAF code is in NAF_SCOPE"
 
 # What a directory's own category word means in our vocabulary. Applied to
 # the `categorie` column of every listing (producteur.direct prints
 # "Éleveur", acheteralasource "Fromages et produits laitiers", VinUp
-# "Producteur viticulteur"…). Every matching rule contributes a tag.
+# "Producteur viticulteur"…). Every matching rule contributes a tag. Wine,
+# cider, beer and charcuterie words are NOT rules: they never become a tag
+# (EXCLUDED_RE), the listing simply carries no tag from them.
 CATEGORY_RULES = (
-    ("vigneron",            re.compile(r"VITICULT|VIGNERON|VIGNOBLE|VINIFI|DOMAINE VITICOLE|\bVINS?\b", re.I)),
     ("fromager",            re.compile(r"FROMAG", re.I)),
     ("laiterie",            re.compile(r"LAITIER|LAITERIE|PRODUITS LAITIERS|YAOURT|BEURRE", re.I)),
     ("éleveur",             re.compile(r"[EÉ]LEV(EUR|AGE)|VIANDE|VOLAILLE|[OŒ]UFS?\b|BOVIN|OVIN|CAPRIN|PORC", re.I)),
@@ -122,11 +133,9 @@ CATEGORY_RULES = (
     ("plantes aromatiques", re.compile(r"AROMATIQ|PPAM|PLANTES M[EÉ]DICINALES|TISANE|SAFRAN", re.I)),
     ("pépiniériste",        re.compile(r"P[EÉ]PINI|HORTICULT|FLEURS?\b", re.I)),
     ("huilerie",            re.compile(r"OL[EÉ]ICULT|HUILE", re.I)),
-    ("cidre",               re.compile(r"CIDRE|POMM[EÉ]", re.I)),
     ("meunerie",            re.compile(r"MEUNERIE|MOULIN|FARINE", re.I)),
     ("transformation",      re.compile(r"ARTISAN|TRANSFORM|CONSERVE|CONFITURE|JUS\b", re.I)),
     ("boulanger",           re.compile(r"BOULANG|PAIN\b", re.I)),
-    ("brasseur",            re.compile(r"BRASS|BI[EÈ]RE", re.I)),
 )
 
 # Canonical listing schema (m3ag_s10_baf.FIELDNAMES) + 4 M7 columns.
@@ -142,10 +151,10 @@ PHONE_SOURCE_FR = {
     "acheteralasource": "fiche Acheter à la source",
     "producteur_direct": "fiche producteur.direct",
     "fermes_locales": "fiche Fermes locales",
-    "vinup": "fiche VinUp",
-    "vignerons_indep": "fiche Vignerons Indépendants",
     "bonfromager": "fiche Bon Fromager",
-    "denosfermes63": "annuaire De nos fermes 63",
+    "denosfermes63": "annuaire De nos fermes 63 (Conseil départemental)",
+    "artisans_vegetal": "fiche Les Artisans du Végétal",
+    "annuairefrancais": "annuaire annuairefrancais.fr",
     "pagesjaunes": "Pages Jaunes",
     "site/mentions_legales": "mentions légales du site de l'exploitation",
     "site/confirme": "site web de l'exploitation",
@@ -154,10 +163,9 @@ PHONE_SOURCE_FR = {
 }
 
 M7_STOPWORDS = set(AGRI_STOPWORDS) | ELEVAGE_GENERICS | {
-    "VIGNERON", "VIGNERONS", "VIGNOBLE", "VIGNOBLES", "VIGNE", "VIGNES", "CAVE", "CAVES",
-    "CHATEAU", "CLOS", "VINS", "VIN", "FROMAGERIE", "FROMAGES", "FROMAGE", "LAITERIE",
-    "MOULIN", "VERGERS", "PEPINIERE", "PEPINIERES", "HORTICULTURE", "SERRES",
-    "CEREALES", "CULTURE", "CULTURES", "SAINT", "POURCAIN", "SIOULE",
+    "FROMAGERIE", "FROMAGES", "FROMAGE", "LAITERIE", "MOULIN", "VERGERS",
+    "PEPINIERE", "PEPINIERES", "HORTICULTURE", "SERRES", "CEREALES", "CULTURE",
+    "CULTURES", "SAINT", "SIOULE",
 }
 
 
@@ -184,11 +192,22 @@ def is_aggregator(url_or_host: str) -> bool:
 
 
 def tag_from_naf(naf: str) -> str:
-    return NAF_TAG.get((naf or "").strip(), "hors scope")
+    naf = (naf or "").strip()
+    if naf in EXCLUDED_NAF:
+        return "exclu"
+    return NAF_TAG.get(naf, "hors scope")
+
+
+def is_excluded(naf: str = "", *texts: str) -> bool:
+    """True when a NAF or a name / category / product text hits the principle."""
+    if (naf or "").strip() in EXCLUDED_NAF:
+        return True
+    return any(EXCLUDED_RE.search(t or "") for t in texts)
 
 
 def tags_from_category(text: str) -> list[str]:
-    """Every sous-segment a directory category / product list points to."""
+    """Every sous-segment a directory category / product list points to.
+    Wine / cider / beer / charcuterie words produce nothing."""
     out = []
     for tag, rx in CATEGORY_RULES:
         if rx.search(text or "") and tag not in out:
@@ -203,7 +222,7 @@ def merge_tags(*groups) -> str:
         items = g.split("|") if isinstance(g, str) else (g or [])
         for t in items:
             t = (t or "").strip()
-            if t and t != "hors scope" and t not in seen:
+            if t and t not in ("hors scope", "exclu") and t not in seen:
                 seen.append(t)
     return "|".join(seen)
 
@@ -260,18 +279,25 @@ def _selftest() -> None:
         fails += 0 if ok else 1
         print(f"  {'ok ' if ok else 'FAIL'} {label}: {got!r}" + ("" if ok else f" (want {want!r})"))
 
-    check("tag vigne", tag_from_naf("01.21Z"), "vigneron")
-    check("tag vinification", tag_from_naf("11.02B"), "vigneron")
+    check("tag vigne is excluded", tag_from_naf("01.21Z"), "exclu")
+    check("tag vinification is excluded", tag_from_naf("11.02B"), "exclu")
+    check("tag charcuterie is excluded", tag_from_naf("10.13B"), "exclu")
+    check("tag porcins is excluded", tag_from_naf("01.46Z"), "exclu")
     check("tag fromage", tag_from_naf("10.51C"), "fromager")
     check("tag livestock is M6", tag_from_naf("01.42Z"), "hors scope")
+    check("excluded by naf", is_excluded("11.03Z"), True)
+    check("excluded by text", is_excluded("", "GAEC X", "Vins et charcuterie"), True)
+    check("not excluded", is_excluded("10.51C", "GAEC DU BOIS JOLI", "Fromages"), False)
     check("category producteur.direct", tags_from_category("Éleveur"), ["éleveur"])
     check("category acheteralasource", tags_from_category("Fromages et produits laitiers, Légumes"),
           ["fromager", "laiterie", "maraîcher"])
-    check("category vinup", tags_from_category("Producteur viticulteur"), ["vigneron"])
+    check("category wine gives no tag", tags_from_category("Producteur viticulteur, vins, cidre, bière"), [])
+    check("category charcuterie gives no tag", tags_from_category("Charcuterie"), [])
     check("category empty", tags_from_category(""), [])
-    check("merge tags", merge_tags("vigneron", ["fromager", "vigneron"], "hors scope"), "vigneron|fromager")
-    check("stopwords drop wine generics", name_tokens("DOMAINE DES BERIOLES", "Vignoble de Saint-Pourçain"),
-          {"BERIOLES"})
+    check("merge tags", merge_tags("maraîcher", ["fromager", "maraîcher"], "hors scope", "exclu"),
+          "maraîcher|fromager")
+    check("stopwords drop generics", name_tokens("FROMAGERIE DU BOIS JOLI", "Ferme de Saint-Nectaire"),
+          {"JOLI", "NECTAIRE"})
     check("dept of cp", dept_of_cp("03500"), "03")
     check("dept of corsica", dept_of_cp("20200"), "2B")
     check("dept of bad cp", dept_of_cp("3500"), "")
