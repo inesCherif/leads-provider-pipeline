@@ -238,6 +238,67 @@ def dept_of_cp(cp: str) -> str:
     return cp[:2]
 
 
+def listing_excluded(name: str, categorie: str, website: str = "") -> bool:
+    """A directory listing is skipped at harvest when its NAME or its own
+    WEBSITE host hits the principle (a brewery, `sauvat-vins.com`) or when
+    its category is ONLY about excluded products. A mixed farm (cheese + a
+    wine line) still passes: its in-scope tags are non-empty."""
+    if EXCLUDED_RE.search(name or ""):
+        return True
+    host = host_of(website) if website else ""
+    if host and re.search(r"vin|vign|cave|chateau|biere|brasser|charcut|porc", host.replace("-", "")):
+        return True
+    if categorie and EXCLUDED_RE.search(categorie) and not tags_from_category(categorie):
+        return True
+    return False
+
+
+# ---------------------------------------------------------------- harvest helpers
+UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+      "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
+PAGE_DELAY = 1.2
+LISTING_DELAY = 0.8
+
+
+def make_session():
+    import requests
+    s = requests.Session()
+    s.headers.update({"User-Agent": UA, "Accept-Language": "fr-FR,fr;q=0.9"})
+    return s
+
+
+def get(sess, url: str, log=None, timeout: int = 40) -> str:
+    """3 attempts, 3/6/9 s backoff; '' on failure (caller never marks done)."""
+    import time
+    for attempt in range(3):
+        try:
+            r = sess.get(url, timeout=timeout)
+            if r.status_code == 200:
+                return r.text
+            if r.status_code == 404:
+                return ""
+            if log:
+                log.warning(f"HTTP {r.status_code} {url}")
+        except Exception as exc:
+            if log:
+                log.warning(f"{type(exc).__name__} {url}")
+        time.sleep(3 * (attempt + 1))
+    return ""
+
+
+def strip(s: str) -> str:
+    import html as htmlmod
+    return " ".join(htmlmod.unescape(re.sub(r"<[^>]+>", " ", s or "")).split())
+
+
+def first_phone_pair(phones: list[str]) -> tuple[str, str]:
+    """(phone, mobile): first number, then the first DIFFERENT one."""
+    phones = [p for p in phones if p]
+    phone = phones[0] if phones else ""
+    mobile = next((p for p in phones[1:] if p != phone), "")
+    return phone, mobile
+
+
 # ---------------------------------------------------------------- population
 def row_id(op: dict) -> str:
     return op.get("siret") or f"X{op.get('siren', '')}"
@@ -294,6 +355,14 @@ def _selftest() -> None:
     check("category wine gives no tag", tags_from_category("Producteur viticulteur, vins, cidre, bière"), [])
     check("category charcuterie gives no tag", tags_from_category("Charcuterie"), [])
     check("category empty", tags_from_category(""), [])
+    check("listing: brewery skipped", listing_excluded("Bières Le Plan B", "Boissons"), True)
+    check("listing: wine-only category skipped", listing_excluded("Domaine X", "Vins"), True)
+    check("listing: mixed farm passes", listing_excluded("Ferme des Volcans", "Fromages - Vins"), False)
+    check("listing: plain farm passes", listing_excluded("GAEC DES OLIVIERS", "Fromages"), False)
+    check("listing: wine host skipped", listing_excluded("SCEA SAUVAT", "Fruits - Vins", "https://www.sauvat-vins.com/"), True)
+    check("listing: farm host passes", listing_excluded("GAEC X", "Fromages", "http://chevreriedesoliviers.fr"), False)
+    check("phone pair", first_phone_pair(["04 70 45 40 83", "04 70 45 40 83", "06 63 70 05 04"]),
+          ("04 70 45 40 83", "06 63 70 05 04"))
     check("merge tags", merge_tags("maraîcher", ["fromager", "maraîcher"], "hors scope", "exclu"),
           "maraîcher|fromager")
     check("stopwords drop generics", name_tokens("FROMAGERIE DU BOIS JOLI", "Ferme de Saint-Nectaire"),
