@@ -75,9 +75,20 @@ DEPARTEMENTS = ("03", "63")
 # assert against it: m7_s1 refuses to pull them, m7_s9 --with-eleveurs
 # drops M6 rows carrying them, m7_s12 fails on them.
 EXCLUDED_NAF = frozenset({"01.21Z", "11.02A", "11.02B", "11.03Z", "11.05Z", "10.13B", "01.46Z"})
+# Strict form (harvest + population): word-bounded, so "La Cave aux
+# Fromages" (a cheese cave), "BRASSAC" (a commune) and "Bonnichon" pass.
 EXCLUDED_RE = re.compile(
-    r"VITICULT|VIGNERON|VIGNOBLE|VINIFI|\bVINS?\b|\bCAVE\b|CIDRE|BRASS|BI[EÈ]RE|CHARCUT|\bPORCS?\b|PORCIN|COCHON",
+    r"VITICULT|VIGNERON|VIGNOBLE|VINIFI|\bVINS?\b|\bCAVES?\s+(?:COOP|VITI|[AÀ]\s+VINS?|DES?\s+VINS?|DU\s+VIN)|"
+    r"\bCIDRE|\bBRASSERIE|\bBRASSEUR|\bBI[EÈ]RES?\b|CHARCUT|\bPORCS?\b|PORCIN|COCHON",
     re.I)
+# Loose form (the Sans SIRET tab only, where no NAF can vouch for the row):
+# any wine / cellar / beer / pork word anywhere in name, category or text.
+EXCLUDED_LOOSE_RE = re.compile(
+    r"VITICULT|VIGNERON|VIGNOBLE|VINIFI|\bVINS?\b|\bVIGNES?\b|\bCAVES?\b|CIDRE|BRASSERIE|BRASSEUR|BI[EÈ]RE|"
+    r"CHARCUT|\bPORCS?\b|PORCIN|COCHON|SPIRITUEUX|DISTILLERIE|LIQUEUR|\bALCOOL", re.I)
+EXCLUDED_HOST_WORDS = {"vin", "vins", "vigne", "vignes", "vignoble", "vignobles", "vigneron", "vignerons",
+                       "cave", "caves", "chateau", "biere", "bieres", "brasserie", "brasseur", "charcuterie",
+                       "charcutier", "porc", "porcs", "cochon", "cochons", "distillerie", "spiritueux"}
 
 # NAF code -> (official label, sous_segment tag). Livestock (01.4x) is M6.
 # Codes with no French metropolitan relevance (riz, canne, tropicaux,
@@ -238,7 +249,15 @@ def dept_of_cp(cp: str) -> str:
     return cp[:2]
 
 
-EXCLUDED_HOST_RE = re.compile(r"vin|vign|cave|chateau|biere|brasser|charcut|porc")
+def host_hits(host_or_domain: str) -> str:
+    """The excluded WORD found in a host / mail domain split on '-', '.'
+    and digits ('sauvat-vins.com' -> 'vins'; 'chevrespoitevines.fr' -> '')."""
+    for tok in re.split(r"[^a-z]+", (host_or_domain or "").lower()):
+        if tok in EXCLUDED_HOST_WORDS:
+            return tok
+    return ""
+
+
 # Strong words only for the free-text description: "vin" alone would drop a
 # cheese farm that mentions a wine pairing.
 EXCLUDED_DESC_RE = re.compile(r"vigneron|viticult|vignoble|domaine viticole|vinifi|brasserie artisanale|"
@@ -262,12 +281,10 @@ def listing_excluded(name: str, categorie: str, website: str = "", email: str = 
     if m:
         return f"description:{m.group(0)}"
     host = host_of(website) if website else ""
-    m = EXCLUDED_HOST_RE.search(host.replace("-", "")) if host else None
-    if m:
+    if host and host_hits(host):
         return f"site:{host}"
     dom = (email or "").rsplit("@", 1)[-1].lower() if "@" in (email or "") else ""
-    m = EXCLUDED_HOST_RE.search(dom.replace("-", "")) if dom else None
-    if m:
+    if dom and host_hits(dom):
         return f"email:{dom}"
     m = EXCLUDED_RE.search(categorie or "")
     if m and not tags_from_category(categorie):
@@ -377,7 +394,12 @@ def _selftest() -> None:
     check("category wine gives no tag", tags_from_category("Producteur viticulteur, vins, cidre, bière"), [])
     check("category charcuterie gives no tag", tags_from_category("Charcuterie"), [])
     check("category empty", tags_from_category(""), [])
-    check("listing: brewery skipped", listing_excluded("Bières Le Plan B", "Boissons"), "nom:Bière")
+    check("listing: brewery skipped", listing_excluded("Bières Le Plan B", "Boissons"), "nom:Bières")
+    check("listing: cheese cave passes", listing_excluded("La Cave aux Fromages de Pierre", "Fromagerie"), "")
+    check("listing: wine coop cave skipped", listing_excluded("CAVE COOPERATIVE SAINT VERNY", ""), "nom:CAVE COOP")
+    check("listing: Brassac commune passes", listing_excluded("GAEC DE BRASSAC", "Fromages"), "")
+    check("listing: poitevines host passes", listing_excluded("Aurelien Robert", "Fromager", "https://chevrespoitevines.fr"), "")
+    check("loose: cave anywhere", bool(EXCLUDED_LOOSE_RE.search("La Cave aux Fromages")), True)
     check("listing: wine-only category skipped", listing_excluded("Domaine X", "Vins"), "categorie:Vins")
     check("listing: mixed farm passes", listing_excluded("Ferme des Volcans", "Fromages - Vins"), "")
     check("listing: plain farm passes", listing_excluded("GAEC DES OLIVIERS", "Fromages"), "")
