@@ -87,7 +87,7 @@ PHONE_RANK = ["agencebio", "osm", "bienvenue_ferme", "jours_de_marche", "denosfe
               "google_panel", "site/confirme", "corrobore"]
 EMAIL_RANK = ["agencebio", "jours_de_marche", "producteur_direct", "fermes_locales", "bonfromager",
               "denosfermes63", "acheteralasource", "site/confirme", "site/probable", "bienvenue_ferme",
-              "osm", "pagesjaunes", "provider", "site/non verifie", "snippet"]
+              "osm", "pagesjaunes", "provider", "social_fb", "site/non verifie", "snippet"]
 SITE_RANK = ["agencebio", "osm", "producteur_direct", "acheteralasource", "fermes_locales",
              "jours_de_marche", "pagesjaunes", "bienvenue_ferme", "site/confirme", "crawl"]
 CONTEXT_RANK = ["producteur_direct", "acheteralasource", "fermes_locales", "jours_de_marche",
@@ -215,6 +215,13 @@ def main() -> None:
                     witnesses[nphone(p)].add(root_domain(h["host"]))
         if provider_phone and not is_surtaxe(provider_phone):
             witnesses[provider_phone].add("fichier_fournisseur")
+        # a phone printed on the farm's public Facebook page: a witness until its
+        # agreement with a measured source is known (m2_s18 takes the first
+        # number on the page, which can be a friend's)
+        for m in ms.get("social_fb", []):
+            p = nphone(m.get("phone"))
+            if p and not is_surtaxe(p):
+                witnesses[p].add("page_facebook")
         listed = {p for p, _ in cands}
         pistes = []
         for p, ws in witnesses.items():
@@ -295,7 +302,7 @@ def main() -> None:
             flat = e.replace(".", "").replace("-", "").replace("_", "").replace("@", "")
             return any(t.lower() in flat for t in strong)
         before = len(uniq)
-        uniq = [(e, s) for e, s in uniq if s not in ("site/non verifie", "snippet") or named(e)]
+        uniq = [(e, s) for e, s in uniq if s not in ("site/non verifie", "snippet", "social_fb") or named(e)]
         stats["e-mail withheld: one witness, no farm name in address"] += before - len(uniq)
         uniq.sort(key=lambda x: (rank(EMAIL_RANK, x[1]), 0 if verified.get(x[0]) == "valide" else 1,
                                  0 if named(x[0]) else 1))
@@ -485,6 +492,10 @@ def main() -> None:
     main_mails = {r["email_final"].lower() for r in rows if r["email_final"]}
     sans = []
     seen_key = set()
+    social_u = {}          # what the Sans SIRET listings' own Facebook pages printed (m7_s18)
+    for s in read_csv(CHECK_DIR / "social_emails.csv"):
+        if s.get("siret", "").startswith("U"):
+            social_u[s["siret"]] = s
     for u in read_csv(CHECK_DIR / f"unmatched_{dept}.csv"):
         if (phone_digits(nphone(u.get("phone")) or "") in main_phones and nphone(u.get("phone"))) or \
            ((u.get("email") or "").lower().strip() in main_mails and (u.get("email") or "").strip()):
@@ -509,6 +520,16 @@ def main() -> None:
             if cp_ and not tel and not is_surtaxe(cp_):
                 tel = cp_
                 stats["sans siret: phone from the listing's own site"] += 1
+        sfb = social_u.get(urid)
+        if sfb:
+            se = (sfb.get("email") or "").lower().strip()
+            if se and not e and verified.get(se) != "invalide" and not is_aggregator(se.partition("@")[2]):
+                e = se
+                stats["sans siret: e-mail from the listing's Facebook page"] += 1
+            sp = nphone(sfb.get("phone")) or ""
+            if sp and not tel and not is_surtaxe(sp):
+                tel = sp
+                stats["sans siret: phone from the listing's Facebook page"] += 1
         if e and verified.get(e) == "invalide":
             e = ""
             stats["sans siret: e-mail withheld invalide"] += 1

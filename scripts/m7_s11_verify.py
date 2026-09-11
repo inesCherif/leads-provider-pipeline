@@ -30,7 +30,8 @@ import m2_s11_verify as core                                        # noqa: E402
 from m7_lib import CHECK_DIR, INHERITED_AGRI, INHERITED_ELEVEURS, DEPARTEMENTS   # noqa: E402
 
 SOURCES = [("site_contacts.csv", "email"), ("search_hits.csv", "emails"),
-           ("provider_agri.csv", "email"), ("db_claims.csv", "email")]       # m7_s19 (V2)
+           ("provider_agri.csv", "email"), ("db_claims.csv", "email"),       # m7_s19 (V2)
+           ("social_emails.csv", "email")]                                   # m7_s18 (V2)
 SOURCES += [(f"matched_{d}.csv", "email") for d in DEPARTEMENTS]
 SOURCES += [(f"unmatched_{d}.csv", "email") for d in DEPARTEMENTS]
 

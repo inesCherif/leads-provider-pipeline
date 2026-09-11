@@ -64,7 +64,9 @@ SOURCES = [
     (INHERITED_ELEVEURS / "agencebio_listings.csv", "agencebio",     ";"),
     (CHECK_DIR / "provider_agri.csv",           "provider",          ";"),   # m7_s19 — witness, Probable only
     (CHECK_DIR / "db_claims.csv",               None,                ";"),   # m7_s19 — source per row
+    (CHECK_DIR / "social_emails.csv",           "social_fb",         ";"),   # m7_s18 — public Facebook pages
 ]
+SOCIAL_CP: dict = {}      # siret -> postcode of OUR population, set in main() before load_listings
 M7_SOURCES = {"acheteralasource", "producteur_direct", "fermes_locales", "jours_de_marche", "bonfromager", "denosfermes63"}
 PJ_SEEN: set = set()
 # db_claims sources that never become a witness here (same rule as m6_s8)
@@ -212,6 +214,12 @@ def load_listings(dept: str) -> tuple[list[dict], Counter]:
         n = 0
         with p.open(encoding="utf-8-sig", newline="") as fh:
             for r in csv.DictReader(fh, delimiter=delim):
+                if label == "social_fb":
+                    # a page read for one of OUR SIRETs (the Sans SIRET pages are read by m7_s9)
+                    if r.get("siret", "").startswith("U") or r["siret"] not in SOCIAL_CP:
+                        continue
+                    r["postcode"], r["name"] = SOCIAL_CP[r["siret"]], r.get("raison_sociale", "")
+                    r["url"], r["listing_id"] = r.get("page_url", ""), r.get("page_url", "")
                 cp = (r.get("postcode") or r.get("codePostal") or "").strip()
                 if not (cp.startswith(dept) or (not cp and (r.get("dept") or "") == dept)):
                     continue
@@ -246,6 +254,8 @@ def detail_of(L: dict, src: str) -> str:
         return f"productions={L.get('productions','')[:200]}; activites={L.get('activites','')}; dirigeant={L.get('dirigeant','')}"
     if L.get("kind") in ("phone", "email", "website"):      # db_claims row
         return f"kind={L.get('kind','')}; verdict={L.get('verdict','')}; dialable={L.get('is_dialable','')}; numero_bio={L.get('numero_bio','')}"
+    if src == "social_fb":
+        return f"via={L.get('found_via','')}; page_address={L.get('page_address','')[:120]}"
     if src == "provider":
         return (f"label={L.get('label','')}; dirigeant={L.get('dirigeant','')}; naf={L.get('naf','')}; "
                 f"email_verified={L.get('email_verified','')}; sirene_etat={L.get('sirene_etat','')}; "
@@ -275,6 +285,7 @@ def main() -> None:
         sys.exit(f"{ours_path} not found — run m7_s2_transform.py first.")
     with ours_path.open(encoding="utf-8-sig", newline="") as fh:
         ours = list(csv.DictReader(fh))
+    SOCIAL_CP.update({r["siret"]: r["codePostal"] for r in ours if r["siret"]})
     listings, dropped = load_listings(dept)
     if not listings:
         sys.exit("No listing files found.")

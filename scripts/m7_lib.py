@@ -171,6 +171,7 @@ PHONE_SOURCE_FR = {
     "site/confirme": "site web de l'exploitation",
     "corrobore": "2 sources indépendantes concordantes",
     "provider": "fichier fournisseur (non vérifié)",
+    "social_fb": "page Facebook de l'exploitation",
 }
 
 M7_STOPWORDS = set(AGRI_STOPWORDS) | ELEVAGE_GENERICS | {
