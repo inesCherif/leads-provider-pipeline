@@ -69,7 +69,7 @@ _load_seen_ids = core.load_seen_ids
 def load_seen_ids_plus() -> None:
     """M7's own file, then the M3AG and M6 harvests: a known card is never re-revealed."""
     _load_seen_ids()
-    n0 = len(core.SEEN_IDS)
+    n0, c0 = len(core.SEEN_IDS), len(core.SEEN_CARDS)
     for d in (INHERITED_AGRI, INHERITED_ELEVEURS):
         p = d / "pj_listings.csv"
         if p.exists():
@@ -77,7 +77,13 @@ def load_seen_ids_plus() -> None:
                 for r in csv.DictReader(fh, delimiter=";"):
                     if r.get("listing_id"):
                         core.SEEN_IDS.add(r["listing_id"])
-    core.log.info(f"seen listing ids: {n0} own + {len(core.SEEN_IDS) - n0} inherited (M3AG + M6)")
+        # cards INSPECTED by the earlier runs (written or not): a page made only of
+        # them skips the reveal clicks (~15 s a page, measured 2026-09-11 17:58)
+        p = d / "pj_seen_cards.txt"
+        if p.exists():
+            core.SEEN_CARDS.update(p.read_text(encoding="utf-8").split())
+    core.log.info(f"seen listing ids: {n0} own + {len(core.SEEN_IDS) - n0} inherited (M3AG + M6); "
+                  f"inspected cards: {c0} own + {len(core.SEEN_CARDS) - c0} inherited")
 
 
 core.load_seen_ids = load_seen_ids_plus
