@@ -39,12 +39,14 @@ import math
 import re
 import sys
 import unicodedata
+
 from collections import Counter, defaultdict
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
 from m6_lib import CHECK_DIR, INHERITED_DIR, M6_STOPWORDS   # noqa: E402
+from m7_s8_match import PJ_CATEGORY_OK_RE      # noqa: E402  (the agricultural PJ categories)
 
 # M7 (producteurs) harvests, read in place — Sam 2026-09-11: "des sites
 # regroupent les éleveurs également". Same listing schema as BAF + 4 cols.
@@ -208,6 +210,10 @@ def load_listings() -> list[dict]:
                     if r["listing_id"] in PJ_SEEN:
                         continue            # same PJ listing present in both trees
                     PJ_SEEN.add(r["listing_id"])
+                    # the M7 trade-slug run (2026-09-11) holds free-text junk (nurses, épiceries):
+                    # only an agricultural PJ category is a witness (same rule as m7_s8)
+                    if r.get("category") and not PJ_CATEGORY_OK_RE.search(r["category"]):
+                        continue
                 r["_source"] = src
                 out.append(r)
                 n += 1

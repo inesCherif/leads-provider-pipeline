@@ -56,6 +56,7 @@ from m3ag_lib import site_key                                          # noqa: E
 from m7_lib import (CHECK_DIR, OUT_DIR, INHERITED_AGRI, INHERITED_ELEVEURS, read_csv,  # noqa: E402
                     name_tokens, root_domain, is_aggregator, is_junk_witness, strong_tokens,
                     JUNK_MAILBOX, phone_digits, load_sent, EXCLUDED_NAF, EXCLUDED_RE,
+                    EXCLUDED_LOOSE_RE, NON_PRODUCER_RE,
                     tags_from_category, merge_tags, listing_excluded, NAF_LABELS)
 
 M3AG_COLUMNS = ["raisonSociale", "siret", "gerant", "telephone", "telephoneCommerciale",
@@ -501,8 +502,12 @@ def main() -> None:
            ((u.get("email") or "").lower().strip() in main_mails and (u.get("email") or "").strip()):
             stats["sans siret dropped: phone / e-mail already on a matched row"] += 1
             continue
-        if listing_excluded(u["name"], u["categorie"], u["website"], u["email"], u["description"]):
+        if listing_excluded(u["name"], u["categorie"], u["website"], u["email"], u["description"]) or \
+           EXCLUDED_LOOSE_RE.search(f"{u['name']} {u['categorie']} {u['productions']} {u['description']}"):
             stats["sans siret dropped: principle"] += 1
+            continue
+        if NON_PRODUCER_RE.search(f"{u['name']} {u['categorie']}"):
+            stats["sans siret dropped: registrant is no producer"] += 1
             continue
         e = (u.get("email") or "").lower().strip()
         tel = nphone(u.get("phone")) or ""

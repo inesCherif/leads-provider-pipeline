@@ -79,16 +79,29 @@ EXCLUDED_NAF = frozenset({"01.21Z", "11.02A", "11.02B", "11.03Z", "11.05Z", "10.
 # Fromages" (a cheese cave), "BRASSAC" (a commune) and "Bonnichon" pass.
 EXCLUDED_RE = re.compile(
     r"VITICULT|VIGNERON|VIGNOBLE|VINIFI|\bVINS?\b|\bCAVES?\s+(?:COOP|VITI|[AÀ]\s+VINS?|DES?\s+VINS?|DU\s+VIN)|"
-    r"\bCIDRE|\bBRASSERIE|\bBRASSEUR|\bBI[EÈ]RES?\b|CHARCUT|\bPORCS?\b|PORCIN|COCHON",
+    r"\bCIDRE|\bBRASSERIE|\bBRASSEUR|\bBI[EÈ]RES?\b|CHARCUT|\bPORCS?\b|PORCIN|COCHON|"
+    # spirits (LA RHUMERIE DIVANA reached the 03 Sans SIRET tab on 2026-09-11; a lavender
+    # "distillerie" is PPAM, so DISTILL stays in the loose form only)
+    r"\bRHUM\b|RHUMERIE|SPIRITUEU|LIQUEUR|WHISK|EAUX?[- ]DE[- ]VIE|\bALCOOL",
     re.I)
 # Loose form (the Sans SIRET tab only, where no NAF can vouch for the row):
 # any wine / cellar / beer / pork word anywhere in name, category or text.
 EXCLUDED_LOOSE_RE = re.compile(
     r"VITICULT|VIGNERON|VIGNOBLE|VINIFI|\bVINS?\b|\bVIGNES?\b|\bCAVES?\b|CIDRE|BRASSERIE|BRASSEUR|BI[EÈ]RE|"
-    r"CHARCUT|\bPORCS?\b|PORCIN|COCHON|SPIRITUEUX|DISTILLERIE|LIQUEUR|\bALCOOL", re.I)
+    r"CHARCUT|\bPORCS?\b|PORCIN|COCHON|SPIRITUEU|DISTILLERIE|LIQUEUR|\bALCOOL|\bRHUM|WHISK|EAUX?[- ]DE[- ]VIE", re.I)
 EXCLUDED_HOST_WORDS = {"vin", "vins", "vigne", "vignes", "vignoble", "vignobles", "vigneron", "vignerons",
                        "cave", "caves", "chateau", "biere", "bieres", "brasserie", "brasseur", "charcuterie",
-                       "charcutier", "porc", "porcs", "cochon", "cochons", "distillerie", "spiritueux"}
+                       "charcutier", "porc", "porcs", "cochon", "cochons", "distillerie", "spiritueux",
+                       "rhum", "rhumerie", "whisky", "liqueur", "liqueurs", "alcool"}
+# A directory registrant that is no producer at all (measured 2026-09-11 on producteur.direct:
+# a tyre shop tagged "Arboriculteur", a landscaper tagged "Maraîcher", a logistics firm, a
+# house builder, a paving franchise). Applied to the Sans SIRET tab only — a registry row has
+# its NAF to vouch for it. Word-bounded; "Maison Delherme" (a producer) must pass.
+NON_PRODUCER_RE = re.compile(
+    r"\bPNEUS?\b|PAYSAGIST|\bPAYSAGES\b|LOGISTIQUE|\bTRANSPORTS?\b|IMMOBILI|ASSURANCE|\bGARAGE\b|COIFFURE|"
+    r"PLOMBERIE|[ÉE]LECTRICIT[ÉE]|MENUISERIE|CARRELAGE|TERRASSEMENT|\bALL[ÉE]ES\b|B[ÂA]TIMENT|CONSTRUCTION|"
+    r"NETTOYAGE|INFORMATIQUE|\bTAXI\b|AMBULANCE|PHARMACIE|INFIRMI|DENTISTE|AVOCAT|NOTAIRE|\bBANQUE\b|"
+    r"SUPERMARCH|HYPERMARCH|\bTABAC\b|\bHOME CONCEPTION\b|EUROTYRE", re.I)
 
 # NAF code -> (official label, sous_segment tag). Livestock (01.4x) is M6.
 # Codes with no French metropolitan relevance (riz, canne, tropicaux,
@@ -407,6 +420,14 @@ def _selftest() -> None:
     check("listing: wine host skipped", listing_excluded("SCEA SAUVAT", "Fruits - Vins", "https://www.sauvat-vins.com/"), "site:sauvat-vins.com")
     check("listing: farm host passes", listing_excluded("GAEC X", "Fromages", "http://chevreriedesoliviers.fr"), "")
     check("listing: wine e-mail domain skipped", listing_excluded("DOMAINE ARBOGAST", "", "", "alexandre@vins-arbogast.fr"), "email:vins-arbogast.fr")
+    check("listing: rum shop skipped", listing_excluded("LA RHUMERIE DIVANA", ""), "nom:RHUMERIE")
+    check("listing: lavender distillery passes (strict)", listing_excluded("Distillerie des Lavandes", "Plantes aromatiques"), "")
+    check("loose: distillerie anywhere", bool(EXCLUDED_LOOSE_RE.search("Distillerie des Lavandes")), True)
+    check("loose: rhum anywhere", bool(EXCLUDED_LOOSE_RE.search("Rhum arrangé maison")), True)
+    check("non-producer: tyre shop", bool(NON_PRODUCER_RE.search("LD PNEUS 03 - Eurotyre Arboriculteur")), True)
+    check("non-producer: landscaper", bool(NON_PRODUCER_RE.search("Dereure Paysages Maraîcher")), True)
+    check("non-producer: Maison Delherme passes", bool(NON_PRODUCER_RE.search("Maison Delherme")), False)
+    check("non-producer: transport in a farm name passes", bool(NON_PRODUCER_RE.search("GAEC DES TRANSPORTEURS")), False)
     check("listing: orange mailbox passes", listing_excluded("Les Biquettes", "", "", "biquettes@orange.fr"), "")
     check("listing: vigneron in description skipped",
           listing_excluded("Domaine EDEL", "", "", "edel@online.fr", "Vigneron indépendant en Alsace"), "description:Vigneron")

@@ -30,7 +30,7 @@ from m2lib_contact import FREE_MAIL, is_surtaxe, plausible_fr_number   # noqa: E
 from m3ag_s12_check import PHONE_RE, EMAIL_RE, MAIRIE_RE, EXTRA_FREE_MAIL   # noqa: E402
 from m3ag_lib import site_key                                             # noqa: E402
 from m7_lib import (OUT_DIR, CHECK_DIR, INHERITED_AGRI, INHERITED_ELEVEURS, read_csv,   # noqa: E402
-                    is_aggregator, root_domain, EXCLUDED_NAF, EXCLUDED_RE, EXCLUDED_LOOSE_RE,
+                    is_aggregator, root_domain, EXCLUDED_NAF, EXCLUDED_RE, EXCLUDED_LOOSE_RE, NON_PRODUCER_RE,
                     host_hits, phone_digits)
 
 
@@ -165,6 +165,10 @@ def main() -> None:
     check(not bad_seg, f"H14 principle: no excluded sous-segment ({len(bad_seg)})")
     check(not bad_host, f"H14 principle: no wine / beer / pork word in a shipped site or e-mail domain ({len(bad_host)})")
     check(not bad_sans, f"H14 principle: no excluded word in a Sans SIRET row ({len(bad_sans)})")
+    # H17: a directory registrant that is no producer (tyre shop, landscaper, house builder —
+    # producteur.direct lets anybody register; measured 2026-09-11) never reaches the tab
+    junk_sans = [g(r, "name") for r in sans if NON_PRODUCER_RE.search(f"{g(r, 'name')} {g(r, 'sous_segment')}")]
+    check(not junk_sans, f"H17 no non-producer registrant on the Sans SIRET sheet ({len(junk_sans)}) {junk_sans[:3]}")
     ctx = [r for r in rows if bool(g(r, "descriptif_activite")) != bool(g(r, "source_contexte"))]
     check(not ctx, f"H15 descriptif_activite filled iff source_contexte ({len(ctx)} mismatches)")
 

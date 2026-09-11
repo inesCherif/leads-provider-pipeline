@@ -47,7 +47,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
 from m7_lib import (CHECK_DIR, INHERITED_AGRI, INHERITED_ELEVEURS, M7_STOPWORDS,   # noqa: E402
-                    LISTING_FIELDS, listing_excluded, EXCLUDED_LOOSE_RE)
+                    LISTING_FIELDS, listing_excluded, EXCLUDED_LOOSE_RE, NON_PRODUCER_RE)
 
 SOURCES = [
     (CHECK_DIR / "aas_listings.csv",            "acheteralasource",  ";"),
@@ -324,6 +324,9 @@ def main() -> None:
         blob = " ".join(L.get(k, "") for k in ("name", "categorie", "productions", "description"))
         if EXCLUDED_LOOSE_RE.search(blob):
             rejects["unmatched dropped on principle (loose)"] += 1
+            return
+        if NON_PRODUCER_RE.search(f"{L.get('name', '')} {L.get('categorie', '')}"):
+            rejects["unmatched dropped: registrant is no producer (tyres, landscaping, transport…)"] += 1
             return
         unmatched.append({"source": src, "reject": why, **{k: L.get(k, "") for k in LISTING_FIELDS}})
 
