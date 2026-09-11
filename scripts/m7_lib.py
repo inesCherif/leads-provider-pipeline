@@ -238,19 +238,41 @@ def dept_of_cp(cp: str) -> str:
     return cp[:2]
 
 
-def listing_excluded(name: str, categorie: str, website: str = "") -> bool:
-    """A directory listing is skipped at harvest when its NAME or its own
-    WEBSITE host hits the principle (a brewery, `sauvat-vins.com`) or when
-    its category is ONLY about excluded products. A mixed farm (cheese + a
-    wine line) still passes: its in-scope tags are non-empty."""
-    if EXCLUDED_RE.search(name or ""):
-        return True
+EXCLUDED_HOST_RE = re.compile(r"vin|vign|cave|chateau|biere|brasser|charcut|porc")
+# Strong words only for the free-text description: "vin" alone would drop a
+# cheese farm that mentions a wine pairing.
+EXCLUDED_DESC_RE = re.compile(r"vigneron|viticult|vignoble|domaine viticole|vinifi|brasserie artisanale|"
+                              r"micro-?brasserie|charcuterie artisanale|élevage de porcs?|elevage de porcs?|"
+                              r"cochons? fermier", re.I)
+
+
+def listing_excluded(name: str, categorie: str, website: str = "", email: str = "",
+                     description: str = "") -> str:
+    """Why a directory listing is skipped at harvest ('' = kept): its NAME,
+    its own WEBSITE host, its E-MAIL domain or a strong DESCRIPTION word
+    hits the principle (a brewery, `sauvat-vins.com`,
+    `alexandre@vins-arbogast.fr`, "vigneron indépendant"), or its category
+    is ONLY about excluded products. A mixed farm (cheese + a wine line)
+    still passes: its in-scope tags are non-empty. Returns the reason so
+    the harvest log says which field fired."""
+    m = EXCLUDED_RE.search(name or "")
+    if m:
+        return f"nom:{m.group(0)}"
+    m = EXCLUDED_DESC_RE.search(description or "")
+    if m:
+        return f"description:{m.group(0)}"
     host = host_of(website) if website else ""
-    if host and re.search(r"vin|vign|cave|chateau|biere|brasser|charcut|porc", host.replace("-", "")):
-        return True
-    if categorie and EXCLUDED_RE.search(categorie) and not tags_from_category(categorie):
-        return True
-    return False
+    m = EXCLUDED_HOST_RE.search(host.replace("-", "")) if host else None
+    if m:
+        return f"site:{host}"
+    dom = (email or "").rsplit("@", 1)[-1].lower() if "@" in (email or "") else ""
+    m = EXCLUDED_HOST_RE.search(dom.replace("-", "")) if dom else None
+    if m:
+        return f"email:{dom}"
+    m = EXCLUDED_RE.search(categorie or "")
+    if m and not tags_from_category(categorie):
+        return f"categorie:{m.group(0)}"
+    return ""
 
 
 # ---------------------------------------------------------------- harvest helpers
@@ -355,12 +377,18 @@ def _selftest() -> None:
     check("category wine gives no tag", tags_from_category("Producteur viticulteur, vins, cidre, bière"), [])
     check("category charcuterie gives no tag", tags_from_category("Charcuterie"), [])
     check("category empty", tags_from_category(""), [])
-    check("listing: brewery skipped", listing_excluded("Bières Le Plan B", "Boissons"), True)
-    check("listing: wine-only category skipped", listing_excluded("Domaine X", "Vins"), True)
-    check("listing: mixed farm passes", listing_excluded("Ferme des Volcans", "Fromages - Vins"), False)
-    check("listing: plain farm passes", listing_excluded("GAEC DES OLIVIERS", "Fromages"), False)
-    check("listing: wine host skipped", listing_excluded("SCEA SAUVAT", "Fruits - Vins", "https://www.sauvat-vins.com/"), True)
-    check("listing: farm host passes", listing_excluded("GAEC X", "Fromages", "http://chevreriedesoliviers.fr"), False)
+    check("listing: brewery skipped", listing_excluded("Bières Le Plan B", "Boissons"), "nom:Bière")
+    check("listing: wine-only category skipped", listing_excluded("Domaine X", "Vins"), "categorie:Vins")
+    check("listing: mixed farm passes", listing_excluded("Ferme des Volcans", "Fromages - Vins"), "")
+    check("listing: plain farm passes", listing_excluded("GAEC DES OLIVIERS", "Fromages"), "")
+    check("listing: wine host skipped", listing_excluded("SCEA SAUVAT", "Fruits - Vins", "https://www.sauvat-vins.com/"), "site:sauvat-vins.com")
+    check("listing: farm host passes", listing_excluded("GAEC X", "Fromages", "http://chevreriedesoliviers.fr"), "")
+    check("listing: wine e-mail domain skipped", listing_excluded("DOMAINE ARBOGAST", "", "", "alexandre@vins-arbogast.fr"), "email:vins-arbogast.fr")
+    check("listing: orange mailbox passes", listing_excluded("Les Biquettes", "", "", "biquettes@orange.fr"), "")
+    check("listing: vigneron in description skipped",
+          listing_excluded("Domaine EDEL", "", "", "edel@online.fr", "Vigneron indépendant en Alsace"), "description:Vigneron")
+    check("listing: 'vin' alone in description passes",
+          listing_excluded("Ferme X", "Fromages", "", "", "nos fromages s'accordent avec un vin blanc"), "")
     check("phone pair", first_phone_pair(["04 70 45 40 83", "04 70 45 40 83", "06 63 70 05 04"]),
           ("04 70 45 40 83", "06 63 70 05 04"))
     check("merge tags", merge_tags("maraîcher", ["fromager", "maraîcher"], "hors scope", "exclu"),

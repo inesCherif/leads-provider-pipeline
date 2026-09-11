@@ -170,10 +170,11 @@ def main() -> None:
 
     n = skipped = w_email = w_phone = w_site = w_contact = 0
     for i, r in enumerate(todo, 1):
-        if listing_excluded(r["name"], r["categorie"]):
+        why = listing_excluded(r["name"], r["categorie"])
+        if why:
             skipped += 1
             mark_done(LIST_DONE, r["listing_id"])
-            log.info(f"[{i}/{len(todo)}] EXCLU {r['name'][:40]} | {r['categorie'][:50]}")
+            log.info(f"[{i}/{len(todo)}] EXCLU {r['name'][:40]} <- {why}")
             continue
         html = get(sess, f"{BASE}/producteur/{r['listing_id']}", log)
         if not html:
@@ -181,10 +182,11 @@ def main() -> None:
         if args.dump and n == 0:
             (CHECK_DIR / "aas_sample.html").write_text(html, encoding="utf-8")
         row = parse_fiche(html, r)
-        if listing_excluded(row["name"], row["categorie"], row["website"]):
+        why = listing_excluded(row["name"], row["categorie"], row["website"], row["email"], row["description"])
+        if why:
             skipped += 1
             mark_done(LIST_DONE, r["listing_id"])
-            log.info(f"[{i}/{len(todo)}] EXCLU {row['name'][:40]} | {row['website'][:40]}")
+            log.info(f"[{i}/{len(todo)}] EXCLU {row['name'][:40]} <- {why}")
             time.sleep(LISTING_DELAY)
             continue
         append_rows(OUT_PATH, LISTING_FIELDS, [row])

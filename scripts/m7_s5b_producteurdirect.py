@@ -139,10 +139,11 @@ def main() -> None:
         if row is None:
             log.warning(f"[{i}/{len(todo)}] no LocalBusiness block: {r['url']}")
             continue
-        if listing_excluded(row["name"], row["categorie"], row["website"]):
+        why = listing_excluded(row["name"], row["categorie"], row["website"], row["email"], row["description"])
+        if why:
             skipped += 1
             mark_done(LIST_DONE, r["slug"])
-            log.info(f"[{i}/{len(todo)}] EXCLU {row['name'][:40]} | {row['categorie']}")
+            log.info(f"[{i}/{len(todo)}] EXCLU {row['name'][:40]} <- {why}")
             time.sleep(LISTING_DELAY)
             continue
         append_rows(OUT_PATH, LISTING_FIELDS, [row])
