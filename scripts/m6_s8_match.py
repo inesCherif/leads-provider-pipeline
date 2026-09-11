@@ -57,6 +57,7 @@ SOURCES = [
     (M7_DIR / "jdm_listings.csv",              "jours_de_marche", ";"),
     (M7_DIR / "bf_listings.csv",               "bonfromager",     ";"),
     (M7_DIR / "dnf_listings.csv",              "denosfermes63",   ";"),
+    (M7_DIR / "pj_listings.csv",               "pagesjaunes",     ";"),   # M7's trade slugs (2026-09-11) list éleveurs too
     (INHERITED_DIR / "pj_listings.csv",        "pagesjaunes",     ";"),
     (INHERITED_DIR / "osm_listings.csv",       "osm",             ";"),
     (INHERITED_DIR / "baf_listings.csv",       "bienvenue_ferme", ";"),

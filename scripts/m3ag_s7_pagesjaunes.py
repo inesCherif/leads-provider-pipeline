@@ -387,10 +387,36 @@ def dismiss_consent(page) -> None:
             pass
 
 
+PJ_DEPT_SLUG = {"63": "puy-de-dome-63", "03": "allier-03", "13": "bouches-du-rhone-13"}
+DEPT_LEVEL_CAP = 400              # 20 pages x 20 cards: past that a dept page is truncated by PJ
+RESULTS_COUNT_RE = re.compile(r"(\d[\d\s  ]{0,6})\s*r[ée]sultats?", re.I)
+DEPT_MARK = "__departement__"     # pseudo-commune used by --dept-level
+
+
+NBRESULTAT_RE = re.compile(r'id="SEL-nbresultat"[^>]*>\s*([\d\s  ]+)<', re.I)
+
+
+def advertised_count(content: str) -> int:
+    """PJ prints the total in `<span id="SEL-nbresultat">51</span>` (measured on the
+    2026-09-11 pilot dump), else '1 234 résultats' in prose; 0 when not found."""
+    m = NBRESULTAT_RE.search(content or "")
+    if m:
+        return int(re.sub(r"\D", "", m.group(1)) or 0)
+    visible = CODE_BLOCK_RE.sub(" ", content or "")
+    m = RESULTS_COUNT_RE.search(visible)
+    return int(re.sub(r"\D", "", m.group(1)) or 0) if m else 0
+
+
 def open_commune(page, commune: str, cp: str, what: str) -> tuple[bool, int]:
     """Open a commune's first results page by URL inside the attached session.
-    Returns (navigated_ok, http_status)."""
-    url = f"{BASE}/annuaire/{pj_location_slug(commune)}/{what}"
+    Returns (navigated_ok, http_status). With --dept-level the pseudo-commune
+    DEPT_MARK opens the DÉPARTEMENT listing instead (one URL per slug,
+    `/annuaire/departement/puy-de-dome-63/<slug>`, ≤ 20 pages)."""
+    if commune == DEPT_MARK:
+        url = f"{BASE}/annuaire/departement/{PJ_DEPT_SLUG[DEPT]}/{what}"
+        commune = f"departement {PJ_DEPT_SLUG[DEPT]}"
+    else:
+        url = f"{BASE}/annuaire/{pj_location_slug(commune)}/{what}"
     status = 0
     for attempt in (1, 2):
         try:
@@ -438,6 +464,10 @@ def main() -> None:
                          "the only route that works (see docstring). REQUIRED.")
     ap.add_argument("--dump-html", action="store_true",
                     help="save fetched pages under checkpoints/pj_html/")
+    ap.add_argument("--dept-level", action="store_true",
+                    help="one DÉPARTEMENT listing per slug (/annuaire/departement/<dept>/<slug>, "
+                         f"≤ {DEPT_LEVEL_CAP} listings) instead of one page per commune; slugs whose "
+                         "p1 advertises more are reported for a commune-level run")
     args = ap.parse_args()
 
     if not args.attach:
@@ -458,17 +488,23 @@ def main() -> None:
     if args.dump_html:
         HTML_DIR.mkdir(parents=True, exist_ok=True)
     load_seen_ids()
-    todo = targets()
-    if args.pilot:
-        todo = todo[:args.pilot]
+    if args.dept_level:
+        todo = [(DEPT_MARK, "")]
+        if DEPT not in PJ_DEPT_SLUG:
+            sys.exit(f"--dept-level: no PJ département slug known for {DEPT} (add it to PJ_DEPT_SLUG)")
+    else:
+        todo = targets()
+        if args.pilot:
+            todo = todo[:args.pilot]
     done = load_done()
-    log.info(f"[{DEPT}] {len(todo)} commune(s) x {len(whats)} slug(s); "
+    log.info(f"[{DEPT}] {len(todo)} {'département listing' if args.dept_level else 'commune(s)'} x {len(whats)} slug(s); "
              f"{len(done)} page-keys already done")
 
     written_total = 0
     blocked = 0
     slug_yield: Counter = Counter()
     slug_404: Counter = Counter()
+    over_cap: dict = {}             # slug -> advertised count when > DEPT_LEVEL_CAP (dept-level only)
 
     with sync_playwright() as p:
         try:
@@ -536,7 +572,7 @@ def main() -> None:
                     log.error(f"{consecutive_blocks} pages blocked in a row — stopping. "
                               "Re-solve the challenge in Chrome and rerun to resume.")
                     break
-                where = f"{DEPT}:{what}:{slug(commune)}-{cp}"
+                where = f"{DEPT}:{what}:departement" if commune == DEPT_MARK else f"{DEPT}:{what}:{slug(commune)}-{cp}"
                 keys = [f"{where}|p{n}" for n in range(1, MAX_PAGES_PER_COMMUNE + 1)]
                 if all(k in done for k in keys):
                     continue
@@ -544,6 +580,13 @@ def main() -> None:
                 if not nav_ok:
                     consecutive_blocks += 1
                     continue
+                if commune == DEPT_MARK and status not in (403, 404, 429):
+                    n_adv = advertised_count(page.content() or "")
+                    log.info(f"{where}: PJ advertises {n_adv} résultats for the whole département")
+                    if n_adv > DEPT_LEVEL_CAP:
+                        over_cap[what] = n_adv
+                        log.warning(f"{where}: {n_adv} > {DEPT_LEVEL_CAP} — the dept listing is truncated at "
+                                    f"{MAX_PAGES_PER_COMMUNE} pages; run this slug commune by commune too")
                 # A 403/429 with no cards is Cloudflare, full stop. Without
                 # this check a blocked session "paginates past" already-done
                 # keys for hours (measured 2026-09-02 01:08): one human-wait,
@@ -601,7 +644,8 @@ def main() -> None:
     log.info("─" * 62)
     log.info(f"[{DEPT}] written={written_total} new rows this run -> {OUT_PATH}")
     for what in whats:
-        log.info(f"[{DEPT}]   slug {what:<40} rows={slug_yield[what]:>4}  404s={slug_404[what]}")
+        log.info(f"[{DEPT}]   slug {what:<40} rows={slug_yield[what]:>4}  404s={slug_404[what]}"
+                 + (f"  OVER CAP ({over_cap[what]} advertised) -> commune-level run needed" if what in over_cap else ""))
     if blocked:
         log.warning(f"{blocked} page(s) blocked — rerun after re-solving; pj_done.txt resumes.")
     if OUT_PATH.exists():
