@@ -62,9 +62,29 @@ SOURCES = [
     (INHERITED_AGRI / "osm_listings.csv",       "osm",               ";"),
     (INHERITED_AGRI / "baf_listings.csv",       "bienvenue_ferme",   ";"),
     (INHERITED_ELEVEURS / "agencebio_listings.csv", "agencebio",     ";"),
+    (CHECK_DIR / "provider_agri.csv",           "provider",          ";"),   # m7_s19 — witness, Probable only
+    (CHECK_DIR / "db_claims.csv",               None,                ";"),   # m7_s19 — source per row
 ]
 M7_SOURCES = {"acheteralasource", "producteur_direct", "fermes_locales", "jours_de_marche", "bonfromager", "denosfermes63"}
 PJ_SEEN: set = set()
+# db_claims sources that never become a witness here (same rule as m6_s8)
+CLAIM_SKIP = {"deliverable", "validator"}
+WEBSITE_OK_VERDICTS = {"valide", "valid"}
+
+
+def claim_source(r: dict) -> str | None:
+    """Source label of a db_claims row, or None when it is not a witness."""
+    src = (r.get("source") or "").strip()
+    base = src.split("(")[0]
+    if not base or base in CLAIM_SKIP:
+        return None
+    if base.startswith("client_file"):
+        return "provider"
+    if r.get("kind") == "website" and (r.get("verdict") or "") not in WEBSITE_OK_VERDICTS:
+        return None
+    if r.get("kind") == "email" and (r.get("verdict") or "") in ("invalid", "invalide", "malformed"):
+        return None
+    return src
 
 GEO_STRICT_M = 40.0
 GEO_TIGHT_M  = 150.0
@@ -187,21 +207,32 @@ def load_listings(dept: str) -> tuple[list[dict], Counter]:
                     if r["listing_id"] in PJ_SEEN:
                         continue            # same PJ listing present in two trees
                     PJ_SEEN.add(r["listing_id"])
+                src = label if label is not None else claim_source(r)
+                if src is None:
+                    continue
+                if label == "provider":
+                    r["categorie"] = r.get("label", "")     # the provider's Activité label faces the principle
                 why = listing_excluded(r.get("name", ""), r.get("categorie", ""), r.get("website", ""),
                                        r.get("email", ""), r.get("description", ""))
                 if why:
-                    dropped[f"{label}: {why.split(':')[0]}"] += 1
+                    dropped[f"{src}: {why.split(':')[0]}"] += 1
                     continue
-                r["_source"] = label
+                r["_source"] = src
                 out.append(r)
                 n += 1
-        log.info(f"loaded {p.parent.parent.name}/{p.name}: source '{label}' ({n} rows in dept {dept})")
+        log.info(f"loaded {p.parent.parent.name}/{p.name}: source '{label or 'per row'}' ({n} rows in dept {dept})")
     return out, dropped
 
 
 def detail_of(L: dict, src: str) -> str:
     if src == "agencebio":
         return f"productions={L.get('productions','')[:200]}; activites={L.get('activites','')}; dirigeant={L.get('dirigeant','')}"
+    if L.get("kind") in ("phone", "email", "website"):      # db_claims row
+        return f"kind={L.get('kind','')}; verdict={L.get('verdict','')}; dialable={L.get('is_dialable','')}; numero_bio={L.get('numero_bio','')}"
+    if src == "provider":
+        return (f"label={L.get('label','')}; dirigeant={L.get('dirigeant','')}; naf={L.get('naf','')}; "
+                f"email_verified={L.get('email_verified','')}; sirene_etat={L.get('sirene_etat','')}; "
+                f"siren={L.get('siren','')}; file={L.get('source_file','')}")
     if src == "bienvenue_ferme":
         return f"alt_name={L.get('alt_name','')}"
     if src == "osm":

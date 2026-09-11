@@ -102,6 +102,9 @@ def main() -> None:
         mism = [r for r in rows if bool(r[val]) != bool(r[src])]
         check(not mism, f"H4 {src} filled iff {val} filled ({len(mism)} mismatches)")
 
+    prov_dial = [r for r in tels if str(r["source_telephone"]).split("(")[0] == "provider"]
+    check(not prov_dial, f"H16 the provider file is never the dialled source on this file ({len(prov_dial)})")
+
     corr = [r for r in tels if str(r["source_telephone"]).startswith("corrobore")]
     bad_corr = [r for r in corr if len(re.findall(r"[^+()]+", str(r["source_telephone"])[10:].strip("()"))) < 2]
     check(not bad_corr, f"H5 corrobore labels name >= 2 witnesses ({len(corr)} corroborated, {len(bad_corr)} bad)")

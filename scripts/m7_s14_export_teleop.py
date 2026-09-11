@@ -142,7 +142,11 @@ def build(dept: str, version: str) -> tuple[list[dict], Counter]:
         if r.get("population_source", "registre") != "registre":
             stats["dropped: éleveurs row (Maha has the éleveurs files)"] += 1
             continue
+        provider_only = False
         tel, tel_src = r["telephone_final"], r["source_telephone"]
+        if not tel and r.get("provider_phone"):
+            # the client's own file, 73 % measured: dialled, but on the Probable tab (M6 rule, T20)
+            tel, tel_src, provider_only = r["provider_phone"], "provider", True
         if not tel:
             stats["dropped: no phone"] += 1
             continue
@@ -176,12 +180,14 @@ def build(dept: str, version: str) -> tuple[list[dict], Counter]:
         if key in kept:
             stats["merged: duplicate SIRET"] += 1
             continue
-        niveau = "Sûr" if r["statut_sirene"].startswith("actif") else "Probable"
+        niveau = "Sûr" if (r["statut_sirene"].startswith("actif") and not provider_only) else "Probable"
         contact = clean(r["gerant"]) if (r.get("nom") or "").strip() else (
-            clean(r.get("contact_directory", "")) or (f"(gérée par {clean(r['gerant'])})" if r["gerant"] else ""))
+            clean(r.get("contact_directory", "")) or clean(r.get("provider_nom", ""))
+            or (f"(gérée par {clean(r['gerant'])})" if r["gerant"] else ""))
         origin = phone_source_fr(tel_src)
-        if r["telephone_confirme_par"]:
+        if r["telephone_confirme_par"] and not provider_only:
             origin += f" — confirmé par {r['telephone_confirme_par']}"
+        stats["kept: provider-only phone (Probable)"] += provider_only
         phones_used.add(d)
         kept[key] = {
             "Entreprise": clean(r["raisonSociale"]), "Sous-segment": r["sous_segment"] or "non précisé",
@@ -328,6 +334,8 @@ def gate(xlsx_path: Path, dept: str, version: str, expected: int) -> int:
     bad_pr = [r for r in rows if EXCLUDED_LOOSE_RE.search(g(r, "Sous-segment")) or
               re.search(r"vigneron|viticult|vignoble|brasserie|cidre|charcuterie|porcin", g(r, "Entreprise"), re.I)]
     check(not bad_pr, f"T19 principle: no wine / beer / pork row ({len(bad_pr)})")
+    prov_sur = [r for r in rows if g(r, "Niveau") == "Sûr" and g(r, "Origine du téléphone").startswith("fichier fournisseur")]
+    check(not prov_sur, f"T20 no provider-only phone in the Sûr tab ({len(prov_sur)})")
     print(f"  info  Contact filled: {sum(1 for r in rows if g(r, 'Contact'))}/{len(rows)}; e-mail: {len(mails)} "
           f"({Counter(g(r, 'Statut e-mail') for r in rows if g(r, 'E-mail')).most_common()}); bio: {sum(1 for r in rows if g(r, 'Bio'))}; "
           f"sous-segments: {Counter(t for r in rows for t in g(r, 'Sous-segment').split('|')).most_common(8)}")

@@ -74,6 +74,7 @@ M7_COLUMNS = ["sous_segment", "descriptif_activite", "source_contexte", "contact
               "bio", "productions_bio", "siren", "denomination_legale", "enseigne",
               "forme_juridique", "nature_juridique", "date_creation", "tranche_effectif", "est_siege",
               "prenom", "nom", "fonction", "flag_public", "procedure_collective",
+              "provider_phone", "provider_email", "provider_nom", "provider_fichier",
               "statut_sirene", "population_source", "telephone_confirme_par", "deja_envoye"]
 COLUMNS = M3AG_COLUMNS + M7_COLUMNS
 SANS_SIRET_COLUMNS = ["name", "contact", "phone", "mobile", "email", "email_statut", "website",
@@ -86,12 +87,14 @@ PHONE_RANK = ["agencebio", "osm", "bienvenue_ferme", "jours_de_marche", "denosfe
               "google_panel", "site/confirme", "corrobore"]
 EMAIL_RANK = ["agencebio", "jours_de_marche", "producteur_direct", "fermes_locales", "bonfromager",
               "denosfermes63", "acheteralasource", "site/confirme", "site/probable", "bienvenue_ferme",
-              "osm", "pagesjaunes", "site/non verifie", "snippet"]
+              "osm", "pagesjaunes", "provider", "site/non verifie", "snippet"]
 SITE_RANK = ["agencebio", "osm", "producteur_direct", "acheteralasource", "fermes_locales",
              "jours_de_marche", "pagesjaunes", "bienvenue_ferme", "site/confirme", "crawl"]
 CONTEXT_RANK = ["producteur_direct", "acheteralasource", "fermes_locales", "jours_de_marche",
                 "denosfermes63", "bonfromager"]
-DIALABLE = set(PHONE_RANK)
+DIALABLE = set(PHONE_RANK)          # the provider file is NOT here: 73 % measured, a witness only
+DB_VERDICT_FR = {"valid": "valide", "invalid": "invalide", "risky": "risque", "malformed": "invalide",
+                 "valide": "valide", "invalide": "invalide", "risque": "risque"}
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)-7s %(message)s",
@@ -168,6 +171,20 @@ def main() -> None:
     def build_row(op: dict, rid: str) -> dict:
         ms = matches.get(rid, {})
         toks = name_tokens(op["raisonSociale"], op.get("denomination_legale", ""), op.get("gerant", ""))
+        # the client's own file (m7_s19): a witness, never dialled alone on this file
+        provider = next((m for m in ms.get("provider", []) if nphone(m.get("phone") or m.get("mobile"))),
+                        (ms.get("provider") or [{}])[0])
+        provider_phone = nphone(provider.get("phone") or provider.get("mobile") or "")
+        provider_email = next(((m.get("email") or "").lower().strip() for m in ms.get("provider", []) if m.get("email")), "")
+        provider_verified = any("email_verified=1" in (m.get("detail") or "") and (m.get("email") or "").lower().strip() == provider_email
+                                for m in ms.get("provider", []))
+        db_verdict = {}
+        for mlist in ms.values():
+            for m in mlist:
+                if m.get("email") and m.get("verdict"):
+                    db_verdict[m["email"].lower().strip()] = DB_VERDICT_FR.get(m["verdict"].lower(), "")
+        if provider_email and provider_verified:
+            db_verdict[provider_email] = "valide"
 
         # ---------------- phones ----------------
         cands = []
@@ -196,6 +213,8 @@ def main() -> None:
             for p in (h.get("phones") or "").split("|"):
                 if nphone(p) and not is_surtaxe(nphone(p)):
                     witnesses[nphone(p)].add(root_domain(h["host"]))
+        if provider_phone and not is_surtaxe(provider_phone):
+            witnesses[provider_phone].add("fichier_fournisseur")
         listed = {p for p, _ in cands}
         pistes = []
         for p, ws in witnesses.items():
@@ -204,7 +223,10 @@ def main() -> None:
             if len(ws) >= 2:
                 cands.append((p, f"corrobore({'+'.join(sorted(ws)[:3])})"))
             else:
-                pistes.append(f"{p} ({next(iter(ws))})")
+                w = next(iter(ws))
+                pistes.append((0 if w == "fichier_fournisseur" else 1,
+                               f"{p} ({'fichier fournisseur' if w == 'fichier_fournisseur' else w})"))
+        pistes = [t for _, t in sorted(pistes)]
         cands.sort(key=lambda x: rank(PHONE_RANK, x[1].split("(")[0]))
         tel_final, tel_src = (cands[0] if cands else ("", ""))
         confirme_par = ""
@@ -212,8 +234,14 @@ def main() -> None:
             agreeing = sorted({s.split("(")[0] for p, s in cands if p == tel_final and s != tel_src})
             if agreeing:
                 confirme_par = "+".join(agreeing[:2])
+            elif provider_phone == tel_final and "fichier_fournisseur" not in tel_src:
+                confirme_par = "fichier fournisseur"
             elif witnesses.get(tel_final):
-                confirme_par = "+".join(sorted(witnesses[tel_final])[:2])
+                confirme_par = "+".join(sorted(w for w in witnesses[tel_final] if w != "fichier_fournisseur")[:2])
+            if provider_phone == tel_final:
+                stats["dialable phone also in the provider file"] += 1
+            elif provider_phone:
+                stats["dialable phone differs from the provider file"] += 1
 
         # ---------------- e-mails ----------------
         ecands = []
@@ -247,7 +275,7 @@ def main() -> None:
             if set(re.split(r"[._\-+]", e.partition("@")[0])) & JUNK_MAILBOX or e.partition("@")[0] in JUNK_MAILBOX:
                 stats["e-mail withheld: junk mailbox"] += 1
                 continue
-            if verified.get(e) == "invalide":
+            if verified.get(e) == "invalide" or db_verdict.get(e) == "invalide":
                 stats["e-mail withheld: invalide"] += 1
                 continue
             if not re.match(r"^[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}$", e):
@@ -272,7 +300,7 @@ def main() -> None:
         uniq.sort(key=lambda x: (rank(EMAIL_RANK, x[1]), 0 if verified.get(x[0]) == "valide" else 1,
                                  0 if named(x[0]) else 1))
         email_final, email_src = (uniq[0] if uniq else ("", ""))
-        email_statut = verified.get(email_final, "") if email_final else ""
+        email_statut = (verified.get(email_final, "") or db_verdict.get(email_final, "")) if email_final else ""
         if email_final and not email_statut and email_src in ("agencebio",) + tuple(DIRECTORIES):
             email_statut = "declare"
         emails_autres = "|".join(e for e, _ in uniq[1:4])
@@ -369,10 +397,15 @@ def main() -> None:
             "site_confiance": conf, "facebook": clean(fb), "instagram": clean(ig),
             "sous_segment": seg, "descriptif_activite": desc[:1500], "source_contexte": desc_src,
             "contact_directory": contact,
+            "provider_phone": provider_phone, "provider_email": provider_email,
+            "provider_nom": clean(provider.get("contact_name", "")),
+            "provider_fichier": clean(re.search(r"file=([^;]*)", provider.get("detail") or "").group(1)
+                                      if provider.get("detail") and "file=" in provider["detail"] else ""),
             "statut_sirene": "actif (liquidateur nommé)" if op.get("procedure_collective") else "actif",
             "population_source": "registre", "telephone_confirme_par": confirme_par, "deja_envoye": deja,
         })
         row["_uniq"] = uniq
+        row["_dbv"] = db_verdict
         return row
 
     for op in ops:
@@ -389,10 +422,12 @@ def main() -> None:
             stats[f"e-mail withheld: domain shared by > 2 farms ({', '.join(sorted(shared)[:3])})"] += 1
             e, s = alt[0] if alt else ("", "")
             r["email_final"], r["source_email"] = e, s
-            r["email_statut"] = (verified.get(e, "") or ("declare" if s in ("agencebio",) + tuple(DIRECTORIES) else "")) if e else ""
+            r["email_statut"] = (verified.get(e, "") or r["_dbv"].get(e, "")
+                                 or ("declare" if s in ("agencebio",) + tuple(DIRECTORIES) else "")) if e else ""
             r["emails_autres"] = "|".join(x for x, _ in alt[1:4])
     for r in rows:
         r.pop("_uniq", None)
+        r.pop("_dbv", None)
     # ---- a discovered website on two different SIRENs is a shared / network
     # site, not either farm's own (H9); two établissements of ONE legal unit may
     # share it. Applied over the WHOLE file, so it runs again after the

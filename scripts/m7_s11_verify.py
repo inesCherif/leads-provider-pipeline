@@ -29,7 +29,8 @@ sys.path.insert(0, str(PROJECT_ROOT))
 import m2_s11_verify as core                                        # noqa: E402
 from m7_lib import CHECK_DIR, INHERITED_AGRI, INHERITED_ELEVEURS, DEPARTEMENTS   # noqa: E402
 
-SOURCES = [("site_contacts.csv", "email"), ("search_hits.csv", "emails")]
+SOURCES = [("site_contacts.csv", "email"), ("search_hits.csv", "emails"),
+           ("provider_agri.csv", "email"), ("db_claims.csv", "email")]       # m7_s19 (V2)
 SOURCES += [(f"matched_{d}.csv", "email") for d in DEPARTEMENTS]
 SOURCES += [(f"unmatched_{d}.csv", "email") for d in DEPARTEMENTS]
 
@@ -43,6 +44,12 @@ def already_verified() -> set:
                 for r in csv.DictReader(fh, delimiter=";"):
                     if r.get("verdict") in ("valide", "invalide", "risque"):
                         done.add((r.get("email") or "").strip().lower())
+    p = CHECK_DIR / "db_claims.csv"          # S9-G verdicts already in the DB (m7_s19)
+    if p.exists():
+        with p.open(encoding="utf-8-sig", newline="") as fh:
+            for r in csv.DictReader(fh, delimiter=";"):
+                if r.get("kind") == "email" and r.get("verdict") in ("valid", "invalid", "risky"):
+                    done.add((r.get("email") or "").strip().lower())
     return done
 
 
@@ -56,6 +63,8 @@ def collect_emails() -> dict:
             continue
         with p.open(encoding="utf-8-sig", newline="") as fh:
             for r in csv.DictReader(fh, delimiter=";"):
+                if fname == "provider_agri.csv" and r.get("email_verified") == "1":
+                    continue                      # S9-G already said valid
                 for e in (r.get(col) or "").split("|"):
                     e = e.strip().lower()
                     if "@" not in e:
