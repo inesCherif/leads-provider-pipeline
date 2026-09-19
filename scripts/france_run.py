@@ -193,9 +193,15 @@ def read_xlsx_counts(dept: str) -> dict:
 # ---------------------------------------------------------------- status file
 
 def status_paths() -> list[Path]:
-    """Every worker's status file. Workers never share one file — two
-    processes rewriting the same CSV lose each other's rows."""
-    return sorted(OUT_ROOT.glob("france_status*.csv")) if OUT_ROOT.exists() else []
+    """Every worker's status file, OLDEST FIRST. Workers never share one file
+    (two processes rewriting one CSV lose each other's rows), and the merge
+    below lets a later file win — so the order must be by modification time,
+    not by name. Sorting by name would let a stale worker row override the
+    rebuild that fixed it, and a département repaired hours later would still
+    read `gate_failed`."""
+    if not OUT_ROOT.exists():
+        return []
+    return sorted(OUT_ROOT.glob("france_status*.csv"), key=lambda p: p.stat().st_mtime)
 
 
 def load_status(own: Path | None = None) -> dict:
