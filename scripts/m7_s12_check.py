@@ -31,7 +31,7 @@ from m3ag_s12_check import PHONE_RE, EMAIL_RE, MAIRIE_RE, EXTRA_FREE_MAIL   # no
 from m3ag_lib import site_key                                             # noqa: E402
 from m7_lib import (OUT_DIR, CHECK_DIR, INHERITED_AGRI, INHERITED_ELEVEURS, read_csv,   # noqa: E402
                     is_aggregator, root_domain, EXCLUDED_NAF, EXCLUDED_RE, EXCLUDED_LOOSE_RE, NON_PRODUCER_RE,
-                    host_hits, phone_digits)
+                    host_hits, phone_digits, load_principle_rescue)
 
 
 def load_sheet(path: Path, name: str) -> list[dict]:
@@ -172,9 +172,11 @@ def main() -> None:
     # The name test (Ines, 2026-09-19): 10.13A is in scope and 10.13B is not, so
     # a "CHARCUTERIE ..." can carry an allowed code. The France pilot shipped 7
     # such rows in 3 départements before this existed.
+    rescued = load_principle_rescue()          # reviewed surname collisions, kept on purpose
     bad_name = [g(r, "raisonSociale") for r in rows
-                if EXCLUDED_RE.search(" ".join(g(r, k) for k in
-                                               ("raisonSociale", "denomination_legale", "enseigne")))]
+                if re.sub(r"\D", "", g(r, "siret")) not in rescued
+                and EXCLUDED_RE.search(" ".join(g(r, k) for k in
+                                                ("raisonSociale", "denomination_legale", "enseigne")))]
     check(not bad_name,
           f"H14 principle: no excluded word in a shipped business name ({len(bad_name)}) {bad_name[:3]}")
     check(not bad_naf, f"H14 principle: no excluded NAF in the file ({len(bad_naf)})")

@@ -1,0 +1,14 @@
+siret;nom;motif
+# Rows whose NAME matches an excluded word but which Ines has reviewed and
+# confirmed are legitimate prospects — almost always a SURNAME that collides
+# with a trade word (Vigneron, Brasseur, Pinot are ordinary French names).
+#
+# The name test drops a row and logs it to principle_excluded_<dept>_<version>.csv.
+# Reading that file and adding a SIRET here is how the decision is made ONCE and
+# applied by every later rebuild, instead of editing an Excel by hand each time.
+#
+# A SIRET here is only ever rescued from the NAME test. An excluded NAF code, an
+# excluded sous-segment or a wine / pork contact domain is still refused: those
+# are facts about the activity, not an accident of spelling.
+#
+# Lines starting with # are ignored. Format: siret;nom;motif

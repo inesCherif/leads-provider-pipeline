@@ -56,6 +56,7 @@ from m3ag_lib import site_key                                          # noqa: E
 from m7_lib import (CHECK_DIR, OUT_DIR, INHERITED_AGRI, INHERITED_ELEVEURS, read_csv,  # noqa: E402
                     name_tokens, root_domain, is_aggregator, is_junk_witness, strong_tokens,
                     JUNK_MAILBOX, phone_digits, load_sent, EXCLUDED_NAF, EXCLUDED_RE, host_hits,
+                    load_principle_rescue,
                     EXCLUDED_LOOSE_RE, NON_PRODUCER_RE,
                     tags_from_category, merge_tags, listing_excluded, NAF_LABELS)
 
@@ -443,8 +444,16 @@ def main() -> None:
     # file, because EXCLUDED_RE also matches a SURNAME (the pilot dropped one
     # "MARIE BRASSEUR") and that list is how a false positive is caught.
     principle_dropped: list[dict] = []
+    rescued = load_principle_rescue()
+    if rescued:
+        log.info(f"principle: {len(rescued)} SIRET on the reviewed rescue list "
+                 f"(config/principle_rescue.csv) — kept despite a name match")
 
     def principle_name_hit(o: dict) -> str:
+        siret = re.sub(r"\D", "", str(o.get("siret") or ""))
+        if siret and siret in rescued:
+            stats["principle: kept, on the reviewed rescue list"] += 1
+            return ""
         blob = " ".join(str(o.get(k) or "") for k in
                         ("raisonSociale", "denomination_legale", "enseigne"))
         m = EXCLUDED_RE.search(blob)

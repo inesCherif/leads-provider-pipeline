@@ -26,6 +26,9 @@ secrets/
 # ── Data files (large / sensitive — never commit raw data) ───────────────────
 data/
 *.csv
+# ... except the rule files. config/ holds decisions, not data: they are
+# git-versioned, diffable and reviewable like sector_rules.py.
+!config/*.csv
 *.xlsx
 *.xls
 *.xlsm

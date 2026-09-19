@@ -263,6 +263,32 @@ def dept_of_cp(cp: str) -> str:
     return cp[:2]
 
 
+PRINCIPLE_RESCUE_PATH = PROJECT_ROOT / "config" / "principle_rescue.csv"
+
+
+def load_principle_rescue() -> dict[str, str]:
+    """SIRETs Ines has reviewed and confirmed are legitimate although their
+    NAME matches an excluded word — almost always a surname colliding with a
+    trade word (Vigneron, Brasseur and Pinot are ordinary French names; dept 63
+    holds A. VIGNERON and CAMILLE VIGNERON, both NAF 01.19Z).
+
+    This rescues a row from the NAME test only. An excluded NAF code, an
+    excluded sous-segment or a wine / pork contact domain is still refused —
+    those are facts about the activity, not an accident of spelling."""
+    out: dict[str, str] = {}
+    if not PRINCIPLE_RESCUE_PATH.exists():
+        return out
+    for line in PRINCIPLE_RESCUE_PATH.read_text(encoding="utf-8-sig").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or line.startswith("siret;"):
+            continue
+        parts = line.split(";")
+        siret = re.sub(r"\D", "", parts[0])
+        if siret:
+            out[siret] = parts[1] if len(parts) > 1 else ""
+    return out
+
+
 def host_hits(host_or_domain: str) -> str:
     """The excluded WORD found in a host / mail domain split on '-', '.'
     and digits ('sauvat-vins.com' -> 'vins'; 'chevrespoitevines.fr' -> '')."""
