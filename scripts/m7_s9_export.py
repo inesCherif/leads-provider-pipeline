@@ -55,7 +55,7 @@ from m3ag_s12_check import MAIRIE_RE, EXTRA_FREE_MAIL                 # noqa: E4
 from m3ag_lib import site_key                                          # noqa: E402
 from m7_lib import (CHECK_DIR, OUT_DIR, INHERITED_AGRI, INHERITED_ELEVEURS, read_csv,  # noqa: E402
                     name_tokens, root_domain, is_aggregator, is_junk_witness, strong_tokens,
-                    JUNK_MAILBOX, phone_digits, load_sent, EXCLUDED_NAF, EXCLUDED_RE,
+                    JUNK_MAILBOX, phone_digits, load_sent, EXCLUDED_NAF, EXCLUDED_RE, host_hits,
                     EXCLUDED_LOOSE_RE, NON_PRODUCER_RE,
                     tags_from_category, merge_tags, listing_excluded, NAF_LABELS)
 
@@ -295,6 +295,15 @@ def main() -> None:
             if MAIRIE_RE.search(e.partition("@")[2]):
                 stats["e-mail withheld: mairie / collectivité mailbox"] += 1
                 continue
+            # The principle applies to the ADDRESS as well as to the business.
+            # Measured in the Gard 2026-09-19: a cattle farm (01.42Z) whose
+            # Agence Bio-declared mailbox is contact@vignoble-<name>.fr — a
+            # mixed holding. The farm is a legitimate prospect, the winery
+            # mailbox is not, so we withhold the address and keep the row.
+            if host_hits(e.partition("@")[2]):
+                stats[f"e-mail withheld: excluded word in the domain (principle: "
+                      f"{host_hits(e.partition('@')[2])})"] += 1
+                continue
             seen_e.add(e)
             uniq.append((e, s))
         strong = strong_tokens(toks)
@@ -327,6 +336,13 @@ def main() -> None:
                 stats["site withheld: probable, name not in domain"] += 1
                 continue
             scands.append((f"https://{v['domain']}", "crawl"))
+        # Same principle test on the site (the Gard row above shipped both a
+        # wine domain and a wine mailbox).
+        before_p = len(scands)
+        scands = [c for c in scands
+                  if not host_hits(str(c[0]).split("//")[-1].split("/")[0])]
+        if len(scands) < before_p:
+            stats["site withheld: excluded word in the domain (principle)"] += before_p - len(scands)
         scands.sort(key=lambda x: rank(SITE_RANK, x[1]))
         site_final, site_src = (scands[0] if scands else ("", ""))
         conf = ""
@@ -519,6 +535,17 @@ def main() -> None:
                 stats["eleveurs dropped: excluded word in the name (principle)"] += 1
                 continue
             row = {c: clean(e.get(c, "")) for c in COLUMNS}
+            # An éleveurs row is copied verbatim from the M6 export, so it does
+            # not go through the withholding above. The Gard had a cattle farm
+            # (01.42Z) whose Agence Bio-declared site AND mailbox were a
+            # winery's domain: the farm is a legitimate prospect, the winery
+            # contact is not. Blank the contact, keep the row.
+            for fld, host in (("website_final", lambda v: v.split("//")[-1].split("/")[0]),
+                              ("email_final", lambda v: v.rpartition("@")[2])):
+                if row.get(fld) and host_hits(host(str(row[fld]))):
+                    stats[f"eleveurs {fld} withheld: excluded word in the domain (principle)"] += 1
+                    row[fld] = ""
+                    row["source_website" if fld == "website_final" else "source_email"] = ""
             row.update({
                 "sous_segment": merge_tags("éleveur", e.get("type_elevage", "")),
                 "descriptif_activite": clean(e.get("productions_bio") or e.get("categories") or e.get("type_elevage")),
