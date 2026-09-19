@@ -282,8 +282,12 @@ WINE_PORK_NAF_RE = re.compile(r"^(01\.21|11\.0|10\.13B|01\.46)")
 # kept SYNDICAT DES VIGNERONS DE L'AOC LUBERON, LES VIGNERONS DU 84 SAS,
 # CUMA LES VIGNERONS and CUMA LA VIGNERONNE, all plainly wine bodies sitting
 # on NAF 01.61Z (soutien aux cultures), which is not a wine code.
+# The article must be its OWN word: `\s*` let "NANS LEVIGNERON" read as
+# "NANS LE · VIGNERON" and refused a poultry farmer called Levigneron. An
+# elided article keeps its apostrophe ("L'VIGNERON" never occurs, but
+# "CAVE D'…" does), so that form is spelled out separately.
 TRADE_ARTICLE_RE = re.compile(
-    r"\b(LES|LE|LA|L|DES|DU|DE|D|AUX|AU)\s*['’]?\s*$", re.I)
+    r"(\b(LES|LE|LA|DES|DU|DE|AUX|AU)\s+|\b[LD]['’]\s*)$", re.I)
 TRADE_COLLECTIVE_RE = re.compile(r"\b(SYNDICAT|COOPERAT|COOP|CAVE|UNION|CONFR[ÉE]RIE)\b", re.I)
 
 
