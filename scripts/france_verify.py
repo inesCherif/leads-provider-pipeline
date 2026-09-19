@@ -20,7 +20,9 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
-from m7_lib import EXCLUDED_NAF, EXCLUDED_RE, host_hits        # noqa: E402
+import re                                                       # noqa: E402
+from m7_lib import (EXCLUDED_NAF, EXCLUDED_RE, host_hits,       # noqa: E402
+                    load_principle_rescue)
 from france_lib import METRO_DEPARTEMENTS, REGION_OF, in_dept   # noqa: E402
 import france_run as fr                                         # noqa: E402
 
@@ -34,6 +36,7 @@ def main() -> None:
 
     from openpyxl import load_workbook
 
+    rescued = load_principle_rescue()
     fails, warns = [], []
 
     def check(cond, label, warn=False):
@@ -87,7 +90,12 @@ def main() -> None:
                 naf = g(r, "codeNAF")
                 if naf in EXCLUDED_NAF:
                     bad_naf.append((dept, g(r, "siret"), naf))
-                if EXCLUDED_RE.search(" ".join(g(r, k) for k in NAME_FIELDS)):
+                # A reviewed surname collision is kept on purpose (Vigneron,
+                # Brasseur and Pinot are ordinary French names), so this must
+                # apply the same rescue list the gate does or it reports the
+                # decision itself as a defect.
+                if re.sub(r"\D", "", g(r, "siret")) not in rescued \
+                        and EXCLUDED_RE.search(" ".join(g(r, k) for k in NAME_FIELDS)):
                     bad_name.append((dept, g(r, "raisonSociale")))
                 site, mail = g(r, "website_final"), g(r, "email_final")
                 if (site and host_hits(site.split("//")[-1].split("/")[0])) or \
