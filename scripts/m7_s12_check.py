@@ -81,7 +81,15 @@ def main() -> None:
     ele = [r for r in rows if g(r, "population_source").startswith("eleveurs")]
     key = lambda r: g(r, "siret") or f"X{g(r,'siren')}|{g(r,'raisonSociale')}|{g(r,'codePostal')}"
     keys = Counter(key(r) for r in rows)
-    check(len(reg) == len(ops), f"H1 registry rows == population ({len(reg)} vs {len(ops)}; + {len(ele)} éleveurs rows)")
+    # H1 exists so the export can never silently lose a registry row. Since
+    # 2026-09-19 it may legitimately drop one — a name that violates the
+    # principle — but only by WRITING IT DOWN. So the accounting must balance
+    # against the review file, not be relaxed: shipped + dropped == population.
+    excluded = read_csv(OUT_DIR / f"principle_excluded_{dept}_{args.version}.csv")
+    excl_reg = [r for r in excluded if "registre" in (r.get("origine") or "")]
+    check(len(reg) + len(excl_reg) == len(ops),
+          f"H1 registry rows + principle drops == population "
+          f"({len(reg)} + {len(excl_reg)} vs {len(ops)}; + {len(ele)} éleveurs rows)")
     check(max(keys.values()) == 1, f"H1 row key unique (max repeat {max(keys.values())})")
     bad_cp = [r for r in rows if r["codePostal"] and (not isinstance(r["codePostal"], str) or len(r["codePostal"]) != 5)]
     src_sirets = {o["siret"] for o in ops if o["siret"]}
@@ -161,6 +169,14 @@ def main() -> None:
     bad_host = [r for r in rows if (r["website_final"] and host_hits(str(r["website_final"]).split("//")[-1].split("/")[0]))
                 or (r["email_final"] and host_hits(str(r["email_final"]).rpartition("@")[2]))]
     bad_sans = [r for r in sans if EXCLUDED_LOOSE_RE.search(" ".join(g(r, k) for k in ("name", "sous_segment", "description")))]
+    # The name test (Ines, 2026-09-19): 10.13A is in scope and 10.13B is not, so
+    # a "CHARCUTERIE ..." can carry an allowed code. The France pilot shipped 7
+    # such rows in 3 départements before this existed.
+    bad_name = [g(r, "raisonSociale") for r in rows
+                if EXCLUDED_RE.search(" ".join(g(r, k) for k in
+                                               ("raisonSociale", "denomination_legale", "enseigne")))]
+    check(not bad_name,
+          f"H14 principle: no excluded word in a shipped business name ({len(bad_name)}) {bad_name[:3]}")
     check(not bad_naf, f"H14 principle: no excluded NAF in the file ({len(bad_naf)})")
     check(not bad_seg, f"H14 principle: no excluded sous-segment ({len(bad_seg)})")
     check(not bad_host, f"H14 principle: no wine / beer / pork word in a shipped site or e-mail domain ({len(bad_host)})")

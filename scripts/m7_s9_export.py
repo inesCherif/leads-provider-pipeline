@@ -416,7 +416,38 @@ def main() -> None:
         row["_dbv"] = db_verdict
         return row
 
+    # ---- the principle, tested on the BUSINESS NAME (Ines, 2026-09-19) ----
+    # Until today the principle was enforced on the NAF code, the sous-segment
+    # and the shipped site / e-mail domain, but never on the name of a main-sheet
+    # row. The France pilot found rows with an allowed NAF and a name that says
+    # otherwise: CHARCUTERIE GASCONNE (32), OREZZA - CHARCUTERIE LA CASTAGNICCIA
+    # (2B), EASY VIGNOBLE — 10.13A "préparation de produits à base de viande" is
+    # in scope while 10.13B charcuterie is not, so the code alone lets them
+    # through. Ines's call: drop them, and write every dropped row to a review
+    # file, because EXCLUDED_RE also matches a SURNAME (the pilot dropped one
+    # "MARIE BRASSEUR") and that list is how a false positive is caught.
+    principle_dropped: list[dict] = []
+
+    def principle_name_hit(o: dict) -> str:
+        blob = " ".join(str(o.get(k) or "") for k in
+                        ("raisonSociale", "denomination_legale", "enseigne"))
+        m = EXCLUDED_RE.search(blob)
+        return m.group(0) if m else ""
+
     for op in ops:
+        word = principle_name_hit(op)
+        if word:
+            principle_dropped.append({
+                "dept": dept, "origine": "producteurs (registre)",
+                "siret": op.get("siret", ""), "siren": op.get("siren", ""),
+                "nom": op.get("raisonSociale", ""),
+                "denomination_legale": op.get("denomination_legale", ""),
+                "enseigne": op.get("enseigne", ""),
+                "naf": op.get("codeNAF", ""), "mot_exclu": word,
+                "commune": op.get("ville", ""), "code_postal": op.get("codePostal", ""),
+            })
+            stats["dropped: excluded word in the name (principle)"] += 1
+            continue
         rows.append(build_row(op, op["siret"] or f"X{op.get('siren', '')}"))
 
     # ---- shared corporate domain on > 2 farms = a third party (H26) ----
@@ -473,6 +504,19 @@ def main() -> None:
                 continue
             if e["siret"] in seen:
                 stats["eleveurs dropped: SIRET already a producteurs row"] += 1
+                continue
+            word = principle_name_hit(e)
+            if word:
+                principle_dropped.append({
+                    "dept": dept, "origine": "éleveurs (M6)",
+                    "siret": e.get("siret", ""), "siren": e.get("siren", ""),
+                    "nom": e.get("raisonSociale", ""),
+                    "denomination_legale": e.get("denomination_legale", ""),
+                    "enseigne": e.get("enseigne", ""),
+                    "naf": e.get("codeNAF", ""), "mot_exclu": word,
+                    "commune": e.get("ville", ""), "code_postal": e.get("codePostal", ""),
+                })
+                stats["eleveurs dropped: excluded word in the name (principle)"] += 1
                 continue
             row = {c: clean(e.get(c, "")) for c in COLUMNS}
             row.update({
@@ -567,6 +611,22 @@ def main() -> None:
         w = csv.DictWriter(fh, fieldnames=COLUMNS)
         w.writeheader()
         w.writerows(rows)
+    # The review file for Ines: everything the name test removed, with the word
+    # that triggered it, so a surname false positive can be rescued by hand.
+    excl_csv = OUT_DIR / f"principle_excluded_{dept}_{args.version}.csv"
+    excl_fields = ["dept", "origine", "siret", "siren", "nom", "denomination_legale",
+                   "enseigne", "naf", "mot_exclu", "commune", "code_postal"]
+    if principle_dropped:
+        with excl_csv.open("w", encoding="utf-8-sig", newline="") as fh:
+            w = csv.DictWriter(fh, fieldnames=excl_fields, delimiter=";")
+            w.writeheader()
+            w.writerows(principle_dropped)
+        log.info(f"[{dept}] principle: {len(principle_dropped)} row(s) dropped on the NAME "
+                 f"-> {excl_csv.name}  "
+                 f"{dict(Counter(r['mot_exclu'].upper() for r in principle_dropped).most_common(6))}")
+    else:
+        excl_csv.unlink(missing_ok=True)
+
     sans_csv = OUT_DIR / f"producteurs_{dept}_{args.version}_sans_siret.csv"
     with sans_csv.open("w", encoding="utf-8-sig", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=SANS_SIRET_COLUMNS)
