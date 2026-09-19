@@ -56,7 +56,7 @@ from m3ag_lib import site_key                                          # noqa: E
 from m7_lib import (CHECK_DIR, OUT_DIR, INHERITED_AGRI, INHERITED_ELEVEURS, read_csv,  # noqa: E402
                     name_tokens, root_domain, is_aggregator, is_junk_witness, strong_tokens,
                     JUNK_MAILBOX, phone_digits, load_sent, EXCLUDED_NAF, EXCLUDED_RE, host_hits,
-                    load_principle_rescue,
+                    load_principle_rescue, name_hit_is_surname,
                     EXCLUDED_LOOSE_RE, NON_PRODUCER_RE,
                     tags_from_category, merge_tags, listing_excluded, NAF_LABELS)
 
@@ -467,7 +467,16 @@ def main() -> None:
         blob = " ".join(str(o.get(k) or "") for k in
                         ("raisonSociale", "denomination_legale", "enseigne"))
         m = EXCLUDED_RE.search(blob)
-        return m.group(0) if m else ""
+        if not m:
+            return ""
+        # Ines's rule: a word that is also a family name, on a NAF that is not
+        # wine / cider / beer / pork, is a spelling coincidence, not an
+        # activity. 92 farmers across France were being dropped for being
+        # called Brasseur or Vigneron.
+        if name_hit_is_surname(m.group(0), o.get("codeNAF", "")):
+            stats[f"principle: kept, surname on a farming NAF ({m.group(0).upper()})"] += 1
+            return ""
+        return m.group(0)
 
     for op in ops:
         word = principle_name_hit(op)

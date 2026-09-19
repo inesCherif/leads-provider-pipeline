@@ -263,6 +263,31 @@ def dept_of_cp(cp: str) -> str:
     return cp[:2]
 
 
+# Excluded words that are ALSO ordinary French family names. A trade word
+# (CHARCUT, VIGNOBLE, VITICULT, BRASSERIE) never is — nobody is called
+# Charcuterie. Measured across France 2026-09-19: the name test dropped 598
+# rows, and VIGNERON (117) and BRASSEUR (37) were the two that kept catching
+# farmers: DAVID BRASSEUR 01.62Z, PIERRE BRASSEUR 01.42Z, MONIQUE BRASSEUR
+# 01.11Z, A. VIGNERON 01.19Z.
+SURNAME_WORDS = frozenset({"VIGNERON", "VIGNERONS", "BRASSEUR", "BRASSEURS",
+                           "PINOT", "COCHON", "VIGNE", "VIGNES", "CAVE", "CAVES"})
+# The codes that make a wine / cider / beer / pork match a fact about the
+# ACTIVITY rather than an accident of spelling.
+WINE_PORK_NAF_RE = re.compile(r"^(01\.21|11\.0|10\.13B|01\.46)")
+
+
+def name_hit_is_surname(word: str, naf: str) -> bool:
+    """Ines's rule, 2026-09-19: keep the row when the excluded word is one that
+    is also a family name AND the NAF is not wine / cider / beer / pork.
+
+    The principle is about what a business DOES, and the NAF states that; the
+    name is only how it is spelled. So a Monsieur Brasseur registered under
+    01.11Z (céréales) is a prospect, and a SAS carrying 11.05Z is not, whatever
+    either of them is called. Applying it as a rule rather than a list of 92
+    SIRETs means it also covers the next département and the next refresh."""
+    return (word or "").upper() in SURNAME_WORDS and not WINE_PORK_NAF_RE.match((naf or "").strip())
+
+
 PRINCIPLE_RESCUE_PATH = PROJECT_ROOT / "config" / "principle_rescue.csv"
 
 
