@@ -73,8 +73,8 @@ VERSION = "v1"
 PORCINS = "01.46Z"          # Ines's principle: never pulled at all
 
 STATUS_FIELDS = ["dept", "region", "status", "failed_step", "rows", "producteurs", "eleveurs",
-                 "phones", "emails", "provider_phones", "joignables", "sans_siret",
-                 "gate", "started", "finished", "minutes"]
+                 "phones", "emails", "provider_phones", "joignables", "joignables_total",
+                 "sans_siret", "gate", "started", "finished", "minutes"]
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)-7s %(message)s",
@@ -155,19 +155,22 @@ def read_xlsx_counts(dept: str) -> dict:
             i = ix.get(name)
             return r[i] if i is not None and i < len(r) else None
 
-        n = tel = mail = prov = reach = n_prod = n_elev = 0
+        n = tel = mail = prov = reach = reach_all = n_prod = n_elev = 0
         for r in rows:
             if r is None or all(v in (None, "") for v in r):
                 continue
             n += 1
             t, m = cell(r, "telephone_final"), cell(r, "email_final")
+            p = cell(r, "provider_phone")
             if t:
                 tel += 1
             if m:
                 mail += 1
             if t or m:
-                reach += 1
-            if cell(r, "provider_phone"):
+                reach += 1              # our own measured sources only
+            if t or m or p:
+                reach_all += 1          # ... plus the client's own file
+            if p:
                 prov += 1
             # population_source is the unambiguous split the export already
             # writes: 'registre' = producteurs, 'eleveurs (M6)' = livestock.
@@ -182,7 +185,7 @@ def read_xlsx_counts(dept: str) -> dict:
             sans = sum(1 for r in s if r and any(v not in (None, "") for v in r))
         return {"rows": n, "producteurs": n_prod, "eleveurs": n_elev, "phones": tel,
                 "emails": mail, "provider_phones": prov, "joignables": reach,
-                "sans_siret": sans}
+                "joignables_total": reach_all, "sans_siret": sans}
     finally:
         wb.close()
 
@@ -352,13 +355,14 @@ def write_recap() -> None:
     wb = Workbook()
     ws = wb.active
     ws.title = "Recap"
-    cols = ["Departement", "Region", "Lignes", "Producteurs", "Eleveurs", "Telephones",
-            "E-mails", "Telephone fichier client", "Joignables", "% joignables",
-            "Sans SIRET", "Controle", "Statut"]
+    cols = ["Departement", "Region", "Lignes", "Producteurs", "Eleveurs",
+            "Telephones (sources mesurees)", "E-mails", "Telephone fichier client",
+            "Joignables (sources mesurees)", "Joignables (avec fichier client)",
+            "% joignables", "Sans SIRET", "Controle", "Statut"]
     ws.append(cols)
     order = {d: i for i, d in enumerate(METRO_DEPARTEMENTS)}
     tot = {k: 0 for k in ("rows", "producteurs", "eleveurs", "phones", "emails",
-                          "provider_phones", "joignables", "sans_siret")}
+                          "provider_phones", "joignables", "joignables_total", "sans_siret")}
     for d in sorted(rows, key=lambda x: order.get(x, 999)):
         r = rows[d]
         live = read_xlsx_counts(d) or {k: r.get(k) for k in tot}
@@ -369,20 +373,22 @@ def write_recap() -> None:
             except (TypeError, ValueError):
                 pass
         j = int(live.get("joignables") or 0)
+        jt = int(live.get("joignables_total") or 0)
         ws.append([d, r["region"], n, live.get("producteurs"), live.get("eleveurs"),
                    live.get("phones"), live.get("emails"), live.get("provider_phones"),
-                   j, (round(100 * j / n, 1) if n else 0), live.get("sans_siret"),
+                   j, jt, (round(100 * jt / n, 1) if n else 0), live.get("sans_siret"),
                    r.get("gate", ""), r.get("status", "")])
     ws.append([])
     ws.append(["TOTAL", f"{len(rows)} départements", tot["rows"], tot["producteurs"],
                tot["eleveurs"], tot["phones"], tot["emails"], tot["provider_phones"],
-               tot["joignables"],
-               (round(100 * tot["joignables"] / tot["rows"], 1) if tot["rows"] else 0),
+               tot["joignables"], tot["joignables_total"],
+               (round(100 * tot["joignables_total"] / tot["rows"], 1) if tot["rows"] else 0),
                tot["sans_siret"], "", ""])
     wb.save(RECAP_PATH)
     log.info(f"recap -> {RECAP_PATH}")
-    log.info(f"TOTAL {tot['rows']} rows · {tot['phones']} phones · {tot['emails']} e-mails · "
-             f"{tot['provider_phones']} provider phones · {tot['joignables']} joignables")
+    log.info(f"TOTAL {tot['rows']} rows · {tot['phones']} measured phones · {tot['emails']} e-mails · "
+             f"{tot['provider_phones']} provider phones · {tot['joignables']} joignables "
+             f"(measured) · {tot['joignables_total']} joignables with the client file")
 
 
 # ---------------------------------------------------------------- main
