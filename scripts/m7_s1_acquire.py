@@ -32,6 +32,7 @@ Usage:
 """
 
 import argparse
+import csv
 import json
 import logging
 import sys
@@ -48,6 +49,7 @@ from m7_lib import CHECK_DIR, DEPARTEMENTS, NAF_SCOPE, NAF_LABELS, NAF_TAG, EXCL
 
 API_BASE = "https://recherche-entreprises.api.gouv.fr/search"
 MAX_RESULTS_CAP = 10_000
+CAPPED_PATH     = CHECK_DIR / "capped_cells.csv"
 REQUEST_DELAY   = 0.7      # 0.4 hit HTTP 429 four times in a row on 2026-09-11
 REQUEST_TIMEOUT = 15
 RETRY_ATTEMPTS  = 6
@@ -59,13 +61,35 @@ logging.basicConfig(level=logging.INFO,
 log = logging.getLogger("m7_s1")
 
 
-def params_for(dept: str, naf: str) -> dict:
-    return {
+def params_for(dept: str, naf: str, active_only: bool = False) -> dict:
+    p = {
         "activite_principale": naf,
         "departement": dept,
         "limite_matching_etablissements": "100",
         "per_page": "25",
     }
+    if active_only:
+        # A CESSÉE legal unit has no active établissement, and m7_s2 drops
+        # closed établissements anyway — so this changes the population by
+        # nothing and cuts roughly a third of the pages. Verified on dept 03
+        # before the France run (population must stay 1,880).
+        p["etat_administratif"] = "A"
+    return p
+
+
+def note_capped(dept: str, naf: str, total: int) -> None:
+    """A (dept, NAF) cell over the API's 10,000-result pagination cap: record
+    it and let the run continue. Aborting France because one cell is too big
+    would cost the other 95 départements; the driver reports the file at the
+    end and the cell is re-pulled split per code_postal."""
+    new = not CAPPED_PATH.exists()
+    with CAPPED_PATH.open("a", encoding="utf-8-sig", newline="") as fh:
+        w = csv.writer(fh, delimiter=";")
+        if new:
+            w.writerow(["dept", "naf", "total_results", "note"])
+        w.writerow([dept, naf, total, "over the 10,000 pagination cap — re-pull split per code_postal"])
+    log.error(f"[{dept} {naf}] total_results={total} >= {MAX_RESULTS_CAP} — SKIPPED, "
+              f"logged in {CAPPED_PATH.name}. This cell needs a per-code_postal split.")
 
 
 def fetch_page(params: dict, page: int) -> dict:
@@ -109,10 +133,11 @@ def save_progress(progress_path: Path, prog: dict) -> None:
     tmp.replace(progress_path)
 
 
-def run_dept(dept: str, naf: str, max_pages: int | None, fresh: bool) -> None:
+def run_dept(dept: str, naf: str, max_pages: int | None, fresh: bool,
+             active_only: bool = False) -> None:
     raw_path = CHECK_DIR / f"api_raw_{dept}.jsonl"
     progress_path = CHECK_DIR / f"api_progress_{dept}_{naf.replace('.', '')}.json"
-    params = params_for(dept, naf)
+    params = params_for(dept, naf, active_only)
     if fresh:
         raw_path.unlink(missing_ok=True)
         for p in CHECK_DIR.glob(f"api_progress_{dept}_*.json"):
@@ -134,8 +159,8 @@ def run_dept(dept: str, naf: str, max_pages: int | None, fresh: bool) -> None:
         data = fetch_page(params, page)
         total, total_pages = data["total_results"], data["total_pages"]
         if total >= MAX_RESULTS_CAP:
-            sys.exit(f"[{dept}] total_results={total} >= {MAX_RESULTS_CAP}: the API caps "
-                     "pagination there. Split the query further (per code_postal).")
+            note_capped(dept, naf, total)
+            return
         if prog["total_results"] is not None and prog["total_results"] != total:
             log.warning(f"[{dept}] total_results changed mid-run: {prog['total_results']} -> {total} "
                         "(registry updated underneath us; m7_s2 dedupes by SIREN).")
@@ -211,6 +236,10 @@ def main() -> None:
     ap.add_argument("--max-pages", type=int, default=None, help="stop after N pages per (dept, NAF) (smoke test)")
     ap.add_argument("--fresh", action="store_true", help="discard the dept's checkpoint and JSONL")
     ap.add_argument("--report", action="store_true", help="only print the count per NAF per dept")
+    ap.add_argument("--active-only", action="store_true",
+                    help="add etat_administratif=A (same population, ~1/3 fewer pages). "
+                         "Changes the query params, so a dept already pulled without it "
+                         "needs --fresh.")
     args = ap.parse_args()
 
     CHECK_DIR.mkdir(parents=True, exist_ok=True)
@@ -224,7 +253,7 @@ def main() -> None:
         sys.exit(f"refusing to pull excluded NAF codes {banned} (m7_lib.EXCLUDED_NAF — Ines's principle)")
     for dept in depts:
         for i, naf in enumerate(nafs):
-            run_dept(dept, naf, args.max_pages, args.fresh and i == 0)
+            run_dept(dept, naf, args.max_pages, args.fresh and i == 0, args.active_only)
         log.info(f"[{dept}] all NAF codes done — next: python scripts/m7_s2_transform.py --departements {dept}")
     report(depts)
 

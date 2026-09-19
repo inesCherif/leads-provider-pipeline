@@ -40,6 +40,7 @@ Usage:
 """
 
 import argparse
+import csv
 import json
 import logging
 import sys
@@ -55,10 +56,11 @@ from m6_lib import CHECK_DIR, DEPARTEMENTS, NAF_SCOPE   # noqa: E402
 
 API_BASE = "https://recherche-entreprises.api.gouv.fr/search"
 MAX_RESULTS_CAP = 10_000
-REQUEST_DELAY   = 0.4
+REQUEST_DELAY   = 0.7      # 0.4 hit HTTP 429 four times in a row (measured on M7, 2026-09-11)
 REQUEST_TIMEOUT = 15
-RETRY_ATTEMPTS  = 4
+RETRY_ATTEMPTS  = 6
 RETRY_BACKOFF   = 3.0
+CAPPED_PATH     = CHECK_DIR / "capped_cells.csv"
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)-7s %(message)s",
@@ -66,13 +68,31 @@ logging.basicConfig(level=logging.INFO,
 log = logging.getLogger("m6_s1")
 
 
-def params_for(dept: str, naf: str) -> dict:
-    return {
+def params_for(dept: str, naf: str, active_only: bool = False) -> dict:
+    p = {
         "activite_principale": naf,
         "departement": dept,
         "limite_matching_etablissements": "100",
         "per_page": "25",
     }
+    if active_only:
+        # A CESSÉE legal unit has no active établissement, and m6_s2 drops
+        # closed établissements anyway — same population, ~1/3 fewer pages.
+        p["etat_administratif"] = "A"
+    return p
+
+
+def note_capped(dept: str, naf: str, total: int) -> None:
+    """A (dept, NAF) cell over the API's 10,000-result pagination cap: record
+    it and let the run continue, instead of aborting the other 95 départements."""
+    new = not CAPPED_PATH.exists()
+    with CAPPED_PATH.open("a", encoding="utf-8-sig", newline="") as fh:
+        w = csv.writer(fh, delimiter=";")
+        if new:
+            w.writerow(["dept", "naf", "total_results", "note"])
+        w.writerow([dept, naf, total, "over the 10,000 pagination cap — re-pull split per code_postal"])
+    log.error(f"[{dept} {naf}] total_results={total} >= {MAX_RESULTS_CAP} — SKIPPED, "
+              f"logged in {CAPPED_PATH.name}. This cell needs a per-code_postal split.")
 
 
 def fetch_page(params: dict, page: int) -> dict:
@@ -116,10 +136,11 @@ def save_progress(progress_path: Path, prog: dict) -> None:
     tmp.replace(progress_path)
 
 
-def run_dept(dept: str, naf: str, max_pages: int | None, fresh: bool) -> None:
+def run_dept(dept: str, naf: str, max_pages: int | None, fresh: bool,
+             active_only: bool = False) -> None:
     raw_path = CHECK_DIR / f"api_raw_{dept}.jsonl"
     progress_path = CHECK_DIR / f"api_progress_{dept}_{naf.replace('.', '')}.json"
-    params = params_for(dept, naf)
+    params = params_for(dept, naf, active_only)
     if fresh:
         raw_path.unlink(missing_ok=True)
         for p in CHECK_DIR.glob(f"api_progress_{dept}_*.json"):
@@ -141,8 +162,8 @@ def run_dept(dept: str, naf: str, max_pages: int | None, fresh: bool) -> None:
         data = fetch_page(params, page)
         total, total_pages = data["total_results"], data["total_pages"]
         if total >= MAX_RESULTS_CAP:
-            sys.exit(f"[{dept}] total_results={total} >= {MAX_RESULTS_CAP}: the API caps "
-                     "pagination there. Split the query further (per code_postal).")
+            note_capped(dept, naf, total)
+            return
         if prog["total_results"] is not None and prog["total_results"] != total:
             log.warning(f"[{dept}] total_results changed mid-run: {prog['total_results']} -> {total} "
                         "(registry updated underneath us; m6_s2 dedupes by SIREN).")
@@ -190,13 +211,22 @@ def main() -> None:
                     help="comma-separated activite_principale codes")
     ap.add_argument("--max-pages", type=int, default=None, help="stop after N pages per dept (smoke test)")
     ap.add_argument("--fresh", action="store_true", help="discard the dept's checkpoint and JSONL")
+    ap.add_argument("--active-only", action="store_true",
+                    help="add etat_administratif=A (same population, ~1/3 fewer pages). "
+                         "Changes the query params, so a dept already pulled without it needs --fresh.")
+    ap.add_argument("--skip-naf", default="",
+                    help="comma-separated NAF codes NOT to pull, e.g. 01.46Z (porcins — "
+                         "Ines's principle; m7_s9 drops them from the deliverable anyway)")
     args = ap.parse_args()
 
     CHECK_DIR.mkdir(parents=True, exist_ok=True)
-    nafs = [n.strip() for n in args.naf.split(",") if n.strip()]
+    skip = {n.strip() for n in args.skip_naf.split(",") if n.strip()}
+    nafs = [n.strip() for n in args.naf.split(",") if n.strip() and n.strip() not in skip]
+    if skip:
+        log.info(f"skipping NAF {sorted(skip)} — not pulled at all")
     for dept in [d.strip() for d in args.departements.split(",") if d.strip()]:
         for i, naf in enumerate(nafs):
-            run_dept(dept, naf, args.max_pages, args.fresh and i == 0)
+            run_dept(dept, naf, args.max_pages, args.fresh and i == 0, args.active_only)
         log.info(f"[{dept}] all NAF codes done — next: python scripts/m6_s2_transform.py --departements {dept}")
 
 
