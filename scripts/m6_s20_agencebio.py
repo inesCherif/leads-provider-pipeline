@@ -17,6 +17,7 @@ Usage:
     python scripts/m6_s20_agencebio.py
 """
 
+import argparse
 import csv
 import logging
 import sys
@@ -27,7 +28,7 @@ PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
 from m2lib_contact import normalize_fr_phone, is_surtaxe   # noqa: E402
 from m6_lib import CHECK_DIR, INHERITED_DIR, DEPARTEMENTS  # noqa: E402
-from france_lib import in_dept                             # noqa: E402
+from france_lib import in_dept, parse_departements         # noqa: E402
 
 OUT_PATH = CHECK_DIR / "agencebio_listings.csv"
 FIELDS = ["dept", "listing_id", "name", "siret", "dirigeant", "phone", "mobile", "email",
@@ -41,12 +42,21 @@ log = logging.getLogger("m6_s20")
 
 
 def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[1])
+    ap.add_argument("--departements", default=",".join(DEPARTEMENTS),
+                    help="comma list, a région name, or 'all' for the 96 of métropole")
+    args = ap.parse_args()
+    depts = parse_departements(args.departements)
+    verbose = len(depts) <= 6
+
     CHECK_DIR.mkdir(parents=True, exist_ok=True)
-    rows, skipped = [], Counter()
-    for dept in DEPARTEMENTS:
+    rows, skipped, missing = [], Counter(), []
+    for dept in depts:
         src = INHERITED_DIR / f"operateurs_{dept}.csv"
         if not src.exists():
-            log.warning(f"[{dept}] {src} missing — M3AG population not built for this dept, skipped")
+            missing.append(dept)
+            if verbose:
+                log.warning(f"[{dept}] {src} missing — M3AG population not built for this dept, skipped")
             continue
         with src.open(encoding="utf-8-sig", newline="") as fh:
             ops = list(csv.DictReader(fh))
@@ -88,7 +98,11 @@ def main() -> None:
         w.writerows(rows)
     log.info("─" * 62)
     log.info(f"written={len(rows)} Agence Bio listings -> {OUT_PATH.name}   skipped {dict(skipped)}")
-    for d in DEPARTEMENTS:
+    if missing:
+        log.warning(f"{len(missing)} département(s) have no Agence Bio population "
+                    f"(run m3ag_s1/m3ag_s2 for them): {', '.join(missing[:20])}"
+                    + (" …" if len(missing) > 20 else ""))
+    for d in depts if verbose else []:
         sub = [x for x in rows if x["dept"] == d]
         log.info(f"[{d}] {len(sub)}: phone {sum(1 for x in sub if x['phone'] or x['mobile'])}, "
                  f"e-mail {sum(1 for x in sub if x['email'])}, site {sum(1 for x in sub if x['website'])}, "

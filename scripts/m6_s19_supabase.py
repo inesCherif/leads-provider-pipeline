@@ -28,6 +28,7 @@ Usage:
     python scripts/m6_s19_supabase.py
 """
 
+import argparse
 import csv
 import logging
 import os
@@ -39,6 +40,8 @@ PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
 from m2lib_contact import normalize_fr_phone, is_surtaxe   # noqa: E402
 from m6_lib import CHECK_DIR, DEPARTEMENTS                 # noqa: E402
+from m7_lib import dept_of_cp                              # noqa: E402
+from france_lib import parse_departements                  # noqa: E402
 
 PROVIDER_PATH = CHECK_DIR / "provider_agri.csv"
 CLAIMS_PATH = CHECK_DIR / "db_claims.csv"
@@ -133,7 +136,22 @@ def split_phones(values: list[str]) -> tuple[str, str]:
     return phone, mobile
 
 
-def write_provider(raw: list[dict]) -> list[dict]:
+def sql_depts(depts: list[str]) -> list[str]:
+    """The base stores Corsica three ways — measured 2026-09-19:
+    department_code is '2A', '2B' and a bare '20' — and the claims query keys
+    on left(postal_code,2), which is always '20'. Ask for all of them and let
+    row_dept() decide which rows are really 2A or 2B."""
+    out = list(depts)
+    if {"2A", "2B"} & set(depts):
+        out.append("20")
+    return out
+
+
+def row_dept(postcode: str, department_code: str) -> str:
+    return dept_of_cp(postcode) or (department_code or "")
+
+
+def write_provider(raw: list[dict], wanted: set[str]) -> list[dict]:
     rows = []
     for r in raw:
         phone, mobile = split_phones([r["phone_main"]])
@@ -141,8 +159,11 @@ def write_provider(raw: list[dict]) -> list[dict]:
         pc = str(r["postal_code"] or "").strip()
         if len(pc) == 4:
             pc = "0" + pc
+        dept = row_dept(pc, r["department_code"])
+        if dept not in wanted:
+            continue
         rows.append({
-            "dept": r["department_code"], "listing_id": f"PV{r['company_id']}",
+            "dept": dept, "listing_id": f"PV{r['company_id']}",
             "name": (r["display_name"] or r["trade_name"] or r["legal_name"] or "").strip(),
             "siret": r["siret"] or "", "siren": r["siren"] or "",
             "dirigeant": (r["full_name"] or "").strip(),
@@ -165,7 +186,7 @@ def write_provider(raw: list[dict]) -> list[dict]:
     return rows
 
 
-def write_claims(raw: list[dict]) -> list[dict]:
+def write_claims(raw: list[dict], wanted: set[str]) -> list[dict]:
     rows = []
     for r in raw:
         kind, val = r["kind"], (r["value_norm"] or "").strip()
@@ -187,8 +208,11 @@ def write_claims(raw: list[dict]) -> list[dict]:
         pc = str(r["postal_code"] or "").strip()
         if len(pc) == 4:
             pc = "0" + pc
+        dept = row_dept(pc, pc[:2])
+        if dept not in wanted:
+            continue
         rows.append({
-            "dept": pc[:2], "listing_id": f"CP{r['company_id']}", "company_id": r["company_id"],
+            "dept": dept, "listing_id": f"CP{r['company_id']}", "company_id": r["company_id"],
             "name": (r["trade_name"] or r["legal_name"] or "").strip(),
             "siret": r["siret"] or "", "siren": r["siren"] or "", "numero_bio": r["numero_bio"] or "",
             "kind": kind, "phone": phone, "mobile": mobile, "email": email, "website": website,
@@ -206,13 +230,24 @@ def write_claims(raw: list[dict]) -> list[dict]:
 
 
 def main() -> None:
-    CHECK_DIR.mkdir(parents=True, exist_ok=True)
-    depts = list(DEPARTEMENTS)
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[1])
+    ap.add_argument("--departements", default=",".join(DEPARTEMENTS),
+                    help="comma list, a région name, or 'all' for the 96 of métropole")
+    args = ap.parse_args()
+    depts = parse_departements(args.departements)
+    wanted = set(depts)
+    verbose = len(depts) <= 6          # a per-dept block is unreadable at 96
 
-    prov = write_provider(fetch(SQL_PROVIDER, (depts, ELEVAGE_LABEL_RE)))
+    CHECK_DIR.mkdir(parents=True, exist_ok=True)
+    log.info(f"{len(depts)} département(s): {', '.join(depts[:12])}{' …' if len(depts) > 12 else ''}")
+
+    prov = write_provider(fetch(SQL_PROVIDER, (sql_depts(depts), ELEVAGE_LABEL_RE)), wanted)
     log.info("─" * 62)
-    log.info(f"written={len(prov)} provider éleveurs -> {PROVIDER_PATH.name}")
-    for d in depts:
+    log.info(f"written={len(prov)} provider éleveurs -> {PROVIDER_PATH.name} "
+             f"({len({x['dept'] for x in prov})} départements, "
+             f"phone {sum(1 for x in prov if x['phone'] or x['mobile'])}, "
+             f"e-mail {sum(1 for x in prov if x['email'])})")
+    for d in depts if verbose else []:
         sub = [x for x in prov if x["dept"] == d]
         log.info(f"[{d}] {len(sub)}: phone {sum(1 for x in sub if x['phone'] or x['mobile'])}, "
                  f"e-mail {sum(1 for x in sub if x['email'])} (verified {sum(1 for x in sub if x['email_verified'])}), "
@@ -220,10 +255,16 @@ def main() -> None:
                  f"dirigeant {sum(1 for x in sub if x['dirigeant'])}; "
                  f"sectors {dict(Counter(x['primary_sector'] for x in sub))}")
 
-    claims = write_claims(fetch(SQL_CLAIMS, (depts,)))
+    if not verbose:
+        empty = [d for d in depts if not any(x["dept"] == d for x in prov)]
+        log.info(f"départements with no provider row: {len(empty)}"
+                 + (f" ({', '.join(empty[:20])})" if empty else ""))
+
+    claims = write_claims(fetch(SQL_CLAIMS, (sql_depts(depts),)), wanted)
     log.info("─" * 62)
-    log.info(f"written={len(claims)} contact_points claims -> {CLAIMS_PATH.name}")
-    for d in depts:
+    log.info(f"written={len(claims)} contact_points claims -> {CLAIMS_PATH.name} "
+             f"on {len({x['company_id'] for x in claims})} companies")
+    for d in depts if verbose else []:
         sub = [x for x in claims if x["dept"] == d]
         by = Counter((x["kind"], x["source"].split("(")[0], x["verdict"] or ("dialable" if x["is_dialable"] == "1" else "")) for x in sub)
         log.info(f"[{d}] {len(sub)} claims on {len({x['company_id'] for x in sub})} companies; "
