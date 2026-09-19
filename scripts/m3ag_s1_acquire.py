@@ -41,6 +41,10 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+PROJECT_ROOT_ = Path(__file__).parent.parent
+sys.path.insert(0, str(PROJECT_ROOT_ / "scripts"))
+from m7_lib import dept_of_cp   # noqa: E402  (Corsica: 20xxx -> 2A / 2B)
+
 PROJECT_ROOT = Path(__file__).parent.parent
 OUT_DIR      = PROJECT_ROOT / "exports" / "agriculteurs" / "checkpoints"
 
@@ -84,8 +88,12 @@ def fetch(dept: str, debut: int) -> dict:
 
 
 def op_depts(op: dict) -> set:
-    """Départements this operator's addresses live in (first 2 digits of CP)."""
-    return {str(a.get("codePostal") or "")[:2]
+    """Départements this operator's addresses live in. dept_of_cp, not cp[:2]:
+    Corsican postcodes are 20xxx but the départements are 2A / 2B, and the
+    API does return them correctly (measured 2026-09-19: 428 and 735
+    operators), so a cp[:2] guard would have aborted the run as 'filter
+    ignored' on its very first page."""
+    return {dept_of_cp(str(a.get("codePostal") or ""))
             for a in op.get("adressesOperateurs", []) if a.get("codePostal")}
 
 

@@ -36,6 +36,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
 from m2lib_contact import normalize_fr_phone  # noqa: E402
+from france_lib import in_dept as cp_in_dept  # noqa: E402
 
 CHECK_DIR = PROJECT_ROOT / "exports" / "agriculteurs" / "checkpoints"
 
@@ -57,7 +58,7 @@ log = logging.getLogger("m3ag_s2")
 def pick_address(op: dict, dept: str) -> tuple[dict | None, bool]:
     """(address, in_dept). Active + in-dept preferred; 'Siège social' first."""
     addrs = [a for a in op.get("adressesOperateurs", []) if a.get("active", True)]
-    in_dept = [a for a in addrs if str(a.get("codePostal") or "").startswith(dept)]
+    in_dept = [a for a in addrs if cp_in_dept(str(a.get("codePostal") or ""), dept)]
     pool, flag = (in_dept, False) if in_dept else (addrs, True)
     if not pool:
         return None, True
