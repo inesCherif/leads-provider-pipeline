@@ -473,7 +473,7 @@ def main() -> None:
         # wine / cider / beer / pork, is a spelling coincidence, not an
         # activity. 92 farmers across France were being dropped for being
         # called Brasseur or Vigneron.
-        if name_hit_is_surname(m.group(0), o.get("codeNAF", "")):
+        if name_hit_is_surname(m.group(0), o.get("codeNAF", ""), blob):
             stats[f"principle: kept, surname on a farming NAF ({m.group(0).upper()})"] += 1
             return ""
         return m.group(0)

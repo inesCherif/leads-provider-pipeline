@@ -176,10 +176,10 @@ def main() -> None:
     def name_violation(r) -> bool:
         if re.sub(r"\D", "", g(r, "siret")) in rescued:
             return False
-        m = EXCLUDED_RE.search(" ".join(g(r, k) for k in
-                                        ("raisonSociale", "denomination_legale", "enseigne")))
+        blob = " ".join(g(r, k) for k in ("raisonSociale", "denomination_legale", "enseigne"))
+        m = EXCLUDED_RE.search(blob)
         # a family name on a farming NAF is a spelling coincidence, not an activity
-        return bool(m) and not name_hit_is_surname(m.group(0), g(r, "codeNAF"))
+        return bool(m) and not name_hit_is_surname(m.group(0), g(r, "codeNAF"), blob)
 
     bad_name = [g(r, "raisonSociale") for r in rows if name_violation(r)]
     check(not bad_name,

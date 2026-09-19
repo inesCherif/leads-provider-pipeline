@@ -276,16 +276,45 @@ SURNAME_WORDS = frozenset({"VIGNERON", "VIGNERONS", "BRASSEUR", "BRASSEURS",
 WINE_PORK_NAF_RE = re.compile(r"^(01\.21|11\.0|10\.13B|01\.46)")
 
 
-def name_hit_is_surname(word: str, naf: str) -> bool:
+# "LES VIGNERONS DU SUD" is the trade; "DAVID VIGNERON" is a man. The
+# difference is grammar: an article before the word, or a plural, means the
+# occupation. Measured on the France files 2026-09-19 — without this the rule
+# kept SYNDICAT DES VIGNERONS DE L'AOC LUBERON, LES VIGNERONS DU 84 SAS,
+# CUMA LES VIGNERONS and CUMA LA VIGNERONNE, all plainly wine bodies sitting
+# on NAF 01.61Z (soutien aux cultures), which is not a wine code.
+TRADE_ARTICLE_RE = re.compile(
+    r"\b(LES|LE|LA|L|DES|DU|DE|D|AUX|AU)\s*['’]?\s*$", re.I)
+TRADE_COLLECTIVE_RE = re.compile(r"\b(SYNDICAT|COOPERAT|COOP|CAVE|UNION|CONFR[ÉE]RIE)\b", re.I)
+
+
+def name_hit_is_surname(word: str, naf: str, name: str = "") -> bool:
     """Ines's rule, 2026-09-19: keep the row when the excluded word is one that
     is also a family name AND the NAF is not wine / cider / beer / pork.
 
-    The principle is about what a business DOES, and the NAF states that; the
-    name is only how it is spelled. So a Monsieur Brasseur registered under
-    01.11Z (céréales) is a prospect, and a SAS carrying 11.05Z is not, whatever
-    either of them is called. Applying it as a rule rather than a list of 92
-    SIRETs means it also covers the next département and the next refresh."""
-    return (word or "").upper() in SURNAME_WORDS and not WINE_PORK_NAF_RE.match((naf or "").strip())
+    The principle is about what a business DOES and the NAF states that; the
+    name is only how it is spelled. A Monsieur Brasseur under 01.11Z is a
+    prospect, a SAS under 11.05Z is not, whatever either is called.
+
+    `name` refines it with the one thing the NAF cannot say: whether the word
+    is used as a NAME or as an OCCUPATION. A plural, or an article in front,
+    means the trade — and those rows go back to being refused."""
+    w = (word or "").upper()
+    if w not in SURNAME_WORDS or WINE_PORK_NAF_RE.match((naf or "").strip()):
+        return False
+    if not name:
+        return True
+    blob = str(name).upper()
+    m = re.search(re.escape(w), blob)
+    if not m:
+        return True
+    token = re.match(r"[A-ZÀ-Ü]*", blob[m.start():]).group(0) or w
+    if token.endswith("S") and token != w:          # VIGNERONS, BRASSEURS
+        return False
+    if TRADE_ARTICLE_RE.search(blob[:m.start()]):   # LES / LA / DES ... VIGNERON
+        return False
+    if TRADE_COLLECTIVE_RE.search(blob):            # SYNDICAT, COOPÉRATIVE, CAVE
+        return False
+    return True
 
 
 PRINCIPLE_RESCUE_PATH = PROJECT_ROOT / "config" / "principle_rescue.csv"
