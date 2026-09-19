@@ -528,6 +528,29 @@ def main() -> None:
                     stats[f"site withheld: shared by {len(site_sirens[d])} legal units ({d})"] += 1
                     r["website_final"], r["source_website"], r["site_confiance"] = "", "", ""
     withhold_shared_sites()
+
+    def withhold_shared_phones() -> None:
+        """The switchboard guard, M2's measured rule: a number on more than two
+        operators is not dialable. It existed in the gate (H8) but never in the
+        export, so the gate could only fail the build instead of the build
+        avoiding it — dept 54 has a CUMA, an SCEA and a GFA in Rozelières on one
+        line, the multi-entity family this repo documents. We cannot tell that
+        apart from a real switchboard, and CLAUDE.md says not to soften the
+        rule, so the number is withheld and the rows keep everything else.
+
+        Owner-declared Agence Bio numbers are exempt, exactly as in H8: a farmer
+        declaring his own line is evidence, not a directory guessing."""
+        by_tel = defaultdict(set)
+        for r in rows:
+            if r["telephone_final"]:
+                by_tel[r["telephone_final"]].add(r["siret"] or r["siren"])
+        for r in rows:
+            t = r["telephone_final"]
+            if t and len(by_tel[t]) > 2 and r["source_telephone"] != "agencebio":
+                stats[f"phone withheld: on {len(by_tel[t])} operators (switchboard guard)"] += 1
+                r["telephone_final"], r["source_telephone"] = "", ""
+                r["telephone_confirme_par"] = ""
+    withhold_shared_phones()
     n_reg = len(rows)
 
     # ---- the éleveurs (M6 full export), appended minus porcins / pets ----
@@ -583,7 +606,12 @@ def main() -> None:
             rows.append(row)
             seen.add(e["siret"])
             stats["eleveurs rows appended"] += 1
+        # Re-run BOTH guards over the merged file: a shared line often spans the
+        # two populations. Dept 54's three Rozelières entities are a CUMA and an
+        # SCEA on the producteurs side and a GFA among the éleveurs, so running
+        # the phone guard before the append saw only two of them and let it pass.
         withhold_shared_sites()
+        withhold_shared_phones()
 
     # ---- Sans SIRET sheet ----
     # a listing whose phone or e-mail is already on a matched row IS that
