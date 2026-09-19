@@ -38,6 +38,7 @@ Usage:
 
 import argparse
 import csv
+import gzip
 import json
 import logging
 import sys
@@ -80,11 +81,26 @@ def clean(v) -> str:
 def run_dept(dept: str, drop_naf: set) -> None:
     raw = CHECK_DIR / f"api_raw_{dept}.jsonl"
     out = CHECK_DIR / f"operateurs_{dept}.csv"
-    if not raw.exists():
+    # The France driver gzips the raw once its transform has run (~8x on 96
+    # départements), so a re-run must be able to read the .gz — otherwise the
+    # pipeline stops being re-runnable the moment it has been tidied up, which
+    # is exactly how dept 2A failed its repair pass on 2026-09-19.
+    gz = CHECK_DIR / f"api_raw_{dept}.jsonl.gz"
+    # A ZERO-BYTE .jsonl must never win over a real .gz. Dept 2A ended up
+    # with an empty one beside its gzipped data and the transform happily
+    # read it, reporting "0 legal units" instead of failing — the
+    # silent-emptiness family again. Size, not existence, decides.
+    have_raw = raw.exists() and raw.stat().st_size > 0
+    have_gz = gz.exists() and gz.stat().st_size > 0
+    if not have_raw and not have_gz:
         sys.exit(f"[{dept}] {raw} missing — run m7_s1_acquire.py --departements {dept} first.")
 
     units: dict = {}
-    with raw.open(encoding="utf-8") as f:
+    if have_raw:
+        opener = lambda: raw.open(encoding="utf-8")              # noqa: E731
+    else:
+        opener = lambda: gzip.open(gz, "rt", encoding="utf-8")   # noqa: E731
+    with opener() as f:
         for line in f:
             u = json.loads(line)
             units[u.get("siren")] = u          # last occurrence wins (freshest fetch)
