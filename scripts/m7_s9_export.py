@@ -50,7 +50,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
 from m1_s8_export import ILLEGAL_XML                       # noqa: E402
-from m2lib_contact import normalize_fr_phone, is_surtaxe, FREE_MAIL   # noqa: E402
+from m2lib_contact import normalize_fr_phone, is_surtaxe, plausible_fr_number, FREE_MAIL   # noqa: E402
 from m3ag_s12_check import MAIRIE_RE, EXTRA_FREE_MAIL                 # noqa: E402
 from m3ag_lib import site_key                                          # noqa: E402
 from m7_lib import (CHECK_DIR, OUT_DIR, INHERITED_AGRI, INHERITED_ELEVEURS, read_csv,  # noqa: E402
@@ -106,6 +106,16 @@ log = logging.getLogger("m7_s9")
 
 def clean(v) -> str:
     return ILLEGAL_XML.sub("", str(v if v is not None else ""))
+
+
+def ok_phone(p: str) -> str:
+    """The normalised number, or "" if it must never be dialled. Mirrors the
+    gate exactly (is_surtaxe AND plausible_fr_number): the export used to test
+    only is_surtaxe, so an unassigned range reached telephone_final and the
+    gate caught it a step too late — dept 27 failed on '03 03 03 03 03', a
+    placeholder typed into producteur.direct, and 030x carries no subscriber."""
+    n = nphone(p)
+    return n if n and not is_surtaxe(n) and plausible_fr_number(n) else ""
 
 
 def nphone(p: str) -> str:
@@ -195,11 +205,11 @@ def main() -> None:
             if base in DIALABLE:
                 for m in mlist:
                     for p in (m.get("phone"), m.get("mobile")):
-                        if nphone(p) and not is_surtaxe(nphone(p)):
+                        if ok_phone(p):
                             cands.append((nphone(p), src))
         for c in site_contacts.get(rid, []):
-            if nphone(c.get("phone")) and c.get("confiance") == "confirme":
-                cands.append((nphone(c["phone"]), "site/confirme"))
+            if ok_phone(c.get("phone")) and c.get("confiance") == "confirme":
+                cands.append((ok_phone(c["phone"]), "site/confirme"))
         # pairwise agreement measurement between sources naming a phone on this row
         by_src = defaultdict(set)
         for p, s in cands:
@@ -213,16 +223,16 @@ def main() -> None:
             if is_junk_witness(h["host"]):
                 continue
             for p in (h.get("phones") or "").split("|"):
-                if nphone(p) and not is_surtaxe(nphone(p)):
+                if ok_phone(p):
                     witnesses[nphone(p)].add(root_domain(h["host"]))
-        if provider_phone and not is_surtaxe(provider_phone):
+        if provider_phone and not is_surtaxe(provider_phone) and plausible_fr_number(provider_phone):
             witnesses[provider_phone].add("fichier_fournisseur")
         # a phone printed on the farm's public Facebook page: a witness until its
         # agreement with a measured source is known (m2_s18 takes the first
         # number on the page, which can be a friend's)
         for m in ms.get("social_fb", []):
             p = nphone(m.get("phone"))
-            if p and not is_surtaxe(p):
+            if p and not is_surtaxe(p) and plausible_fr_number(p):
                 witnesses[p].add("page_facebook")
         listed = {p for p, _ in cands}
         pistes = []
@@ -601,7 +611,7 @@ def main() -> None:
             if ce and not e and verified.get(ce) != "invalide" and not is_aggregator(ce.partition("@")[2]):
                 e = ce
                 stats["sans siret: e-mail from the listing's own site"] += 1
-            cp_ = nphone(c.get("phone")) or ""
+            cp_ = ok_phone(c.get("phone")) or ""
             if cp_ and not tel and not is_surtaxe(cp_):
                 tel = cp_
                 stats["sans siret: phone from the listing's own site"] += 1

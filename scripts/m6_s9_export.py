@@ -49,7 +49,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
 from m1_s8_export import ILLEGAL_XML                       # noqa: E402
-from m2lib_contact import normalize_fr_phone, is_surtaxe, FREE_MAIL   # noqa: E402
+from m2lib_contact import normalize_fr_phone, is_surtaxe, plausible_fr_number, FREE_MAIL   # noqa: E402
 from m3ag_s12_check import MAIRIE_RE, EXTRA_FREE_MAIL                 # noqa: E402
 from m6_lib import (CHECK_DIR, OUT_DIR, INHERITED_DIR, read_csv, name_tokens, root_domain,  # noqa: E402
                     is_aggregator, is_junk_witness, strong_tokens, JUNK_MAILBOX,
@@ -103,6 +103,19 @@ def clean(v) -> str:
 
 def nphone(p: str) -> str:
     return normalize_fr_phone(p or "") or ""
+
+
+def ok_phone(p: str) -> str:
+    """The normalised number, or "" if it must never be dialled.
+
+    The export used to test only is_surtaxe while the gate tested BOTH
+    is_surtaxe and plausible_fr_number, so an unassigned range walked into
+    telephone_final and the gate caught it one step too late. Dept 27 failed
+    on '03 03 03 03 03' — a placeholder a producer typed into
+    producteur.direct; 030x carries no French subscriber. Same function as the
+    gate now, so the two cannot drift apart again."""
+    n = nphone(p)
+    return n if n and not is_surtaxe(n) and plausible_fr_number(n) else ""
 
 
 def rank(order: list, key: str) -> int:
@@ -181,25 +194,25 @@ def main() -> None:
             if base in DIALABLE:
                 for m in mlist:
                     for p in (m.get("phone"), m.get("mobile")):
-                        if nphone(p) and not is_surtaxe(nphone(p)):
+                        if ok_phone(p):
                             cands.append((nphone(p), src))
         for c in site_contacts.get(rid, []):
-            if nphone(c.get("phone")) and c.get("confiance") == "confirme":
-                cands.append((nphone(c["phone"]), "site/confirme"))
+            if ok_phone(c.get("phone")) and c.get("confiance") == "confirme":
+                cands.append((ok_phone(c["phone"]), "site/confirme"))
         # one-witness claims: snippet hosts, DB pistes, the provider file
         witnesses = defaultdict(set)
         for h in hits.get(rid, []):
             if is_junk_witness(h["host"]):
                 continue
             for p in (h.get("phones") or "").split("|"):
-                if nphone(p) and not is_surtaxe(nphone(p)):
+                if ok_phone(p):
                     witnesses[nphone(p)].add(root_domain(h["host"]))
         for src in ("piste", "site/probable", "snippet"):
             for m in ms.get(src, []):
                 for p in (m.get("phone"), m.get("mobile")):
                     if nphone(p) and not is_surtaxe(nphone(p)):
                         witnesses[nphone(p)].add(f"db_{src.replace('/', '_')}")
-        if provider_phone and not is_surtaxe(provider_phone):
+        if provider_phone and not is_surtaxe(provider_phone) and plausible_fr_number(provider_phone):
             witnesses[provider_phone].add("fichier_fournisseur")
         listed = {p for p, _ in cands}
         pistes = []
