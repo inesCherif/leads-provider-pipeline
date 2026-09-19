@@ -138,7 +138,14 @@ def gzip_raw(dept: str) -> None:
 def read_xlsx_counts(dept: str) -> dict:
     """Count the deliverable by READING THE XLSX BACK, never from the logs —
     the rule this project learned the hard way (written= vs collected=)."""
-    path = M7_OUT / f"producteurs_{dept}_{VERSION}.xlsx"
+    # Count what is DELIVERED, not what happens to sit in the build folder.
+    # 03 and 63 ship as v3, so reading M7_OUT/<dept>_v1.xlsx missed them and the
+    # recap fell back to stale status numbers — it disagreed with france_verify
+    # by 6 rows and 585 joignables. The recap is the file Sam receives; it must
+    # count the same bytes he opens.
+    delivered = sorted((OUT_ROOT / region_dir(dept)).glob(f"producteurs_{dept}_v*.xlsx")) \
+        if (OUT_ROOT / region_dir(dept)).exists() else []
+    path = delivered[-1] if delivered else (M7_OUT / f"producteurs_{dept}_{VERSION}.xlsx")
     if not path.exists():
         return {}
     from openpyxl import load_workbook
