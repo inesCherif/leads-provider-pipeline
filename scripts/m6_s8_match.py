@@ -47,6 +47,7 @@ PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
 from m6_lib import CHECK_DIR, INHERITED_DIR, M6_STOPWORDS   # noqa: E402
 from m7_s8_match import PJ_CATEGORY_OK_RE      # noqa: E402  (the agricultural PJ categories)
+from france_lib import in_dept                 # noqa: E402
 
 # M7 (producteurs) harvests, read in place — Sam 2026-09-11: "des sites
 # regroupent les éleveurs également". Same listing schema as BAF + 4 cols.
@@ -262,7 +263,7 @@ def main() -> None:
     with ours_path.open(encoding="utf-8-sig", newline="") as fh:
         ours = list(csv.DictReader(fh))
     listings = [L for L in load_listings()
-                if (L.get("postcode") or L.get("codePostal") or "").startswith(dept)
+                if in_dept(L.get("postcode") or L.get("codePostal") or "", dept)
                 or (not (L.get("postcode") or "") and L.get("dept", dept) == dept)]
     if not listings:
         sys.exit("No listing files found.")

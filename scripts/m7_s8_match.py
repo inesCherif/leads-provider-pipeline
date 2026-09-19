@@ -48,6 +48,7 @@ PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
 from m7_lib import (CHECK_DIR, INHERITED_AGRI, INHERITED_ELEVEURS, M7_STOPWORDS,   # noqa: E402
                     LISTING_FIELDS, listing_excluded, EXCLUDED_LOOSE_RE, NON_PRODUCER_RE)
+from france_lib import in_dept                                                     # noqa: E402
 
 SOURCES = [
     (CHECK_DIR / "aas_listings.csv",            "acheteralasource",  ";"),
@@ -221,7 +222,7 @@ def load_listings(dept: str) -> tuple[list[dict], Counter]:
                     r["postcode"], r["name"] = SOCIAL_CP[r["siret"]], r.get("raison_sociale", "")
                     r["url"], r["listing_id"] = r.get("page_url", ""), r.get("page_url", "")
                 cp = (r.get("postcode") or r.get("codePostal") or "").strip()
-                if not (cp.startswith(dept) or (not cp and (r.get("dept") or "") == dept)):
+                if not (in_dept(cp, dept) or (not cp and (r.get("dept") or "") == dept)):
                     continue
                 if label == "pagesjaunes" and r.get("listing_id"):
                     if r["listing_id"] in PJ_SEEN:

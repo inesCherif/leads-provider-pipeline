@@ -58,6 +58,7 @@ from scripts.m1_s8_export import EFFECTIF_LABEL, ILLEGAL_XML      # noqa: E402
 from m2_s2_transform import pick_dirigeant                        # noqa: E402
 from m6_lib import (CHECK_DIR, DEPARTEMENTS, NAF_SCOPE, NAF_LABELS,  # noqa: E402
                     classify_type, is_public, is_pet_trade)
+from france_lib import in_dept                                    # noqa: E402
 
 # m3ag_s2.COLUMNS verbatim, then the M6 columns.
 ADAPTER_COLUMNS = ["raisonSociale", "siret", "gerant", "telephone", "telephoneCommerciale",
@@ -114,7 +115,7 @@ def run_dept(dept: str) -> None:
                 c["dropped: closed etab"] += 1
                 continue
             cp = e.get("code_postal") or ""
-            if not cp.startswith(dept):
+            if not in_dept(cp, dept):      # not startswith: 20190 is in 2A, not in "20"
                 c["dropped: outside dept"] += 1
                 continue
             naf = e.get("activite_principale") or unit_naf

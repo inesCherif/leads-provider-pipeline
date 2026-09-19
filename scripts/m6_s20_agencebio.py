@@ -27,6 +27,7 @@ PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
 from m2lib_contact import normalize_fr_phone, is_surtaxe   # noqa: E402
 from m6_lib import CHECK_DIR, INHERITED_DIR, DEPARTEMENTS  # noqa: E402
+from france_lib import in_dept                             # noqa: E402
 
 OUT_PATH = CHECK_DIR / "agencebio_listings.csv"
 FIELDS = ["dept", "listing_id", "name", "siret", "dirigeant", "phone", "mobile", "email",
@@ -53,7 +54,7 @@ def main() -> None:
             if op.get("flag_hors_agri") == "1":
                 skipped["hors_agri"] += 1
                 continue
-            if not op.get("codePostal", "").startswith(dept):
+            if not in_dept(op.get("codePostal", ""), dept):
                 skipped["outside dept"] += 1
                 continue
             phones = [normalize_fr_phone(p) for p in (op.get("telephone"), op.get("telephoneCommerciale")) if p]
