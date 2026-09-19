@@ -92,10 +92,15 @@ def main() -> None:
                 "url": f"https://annuaire.agencebio.org/fiche/{op.get('numeroBio', '')}" if op.get("numeroBio") else "",
             })
     rows.sort(key=lambda x: (x["dept"], x["postcode"], x["name"]))
-    with OUT_PATH.open("w", encoding="utf-8-sig", newline="") as fh:
+    # Written to a .tmp then replaced: during the France run the matchers read
+    # this file while it is being refreshed, and a plain open("w") would let one
+    # of them see a truncated file and silently lose its Agence Bio witnesses.
+    tmp = OUT_PATH.with_suffix(".csv.tmp")
+    with tmp.open("w", encoding="utf-8-sig", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=FIELDS, delimiter=";", quoting=csv.QUOTE_MINIMAL)
         w.writeheader()
         w.writerows(rows)
+    tmp.replace(OUT_PATH)
     log.info("─" * 62)
     log.info(f"written={len(rows)} Agence Bio listings -> {OUT_PATH.name}   skipped {dict(skipped)}")
     if missing:
