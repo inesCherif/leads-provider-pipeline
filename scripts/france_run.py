@@ -189,22 +189,39 @@ def read_xlsx_counts(dept: str) -> dict:
 
 # ---------------------------------------------------------------- status file
 
-def load_status() -> dict:
-    if not STATUS_PATH.exists():
-        return {}
-    with STATUS_PATH.open(encoding="utf-8-sig", newline="") as fh:
-        return {r["dept"]: r for r in csv.DictReader(fh, delimiter=";")}
+def status_paths() -> list[Path]:
+    """Every worker's status file. Workers never share one file — two
+    processes rewriting the same CSV lose each other's rows."""
+    return sorted(OUT_ROOT.glob("france_status*.csv")) if OUT_ROOT.exists() else []
 
 
-def save_status(rows: dict) -> None:
+def load_status(own: Path | None = None) -> dict:
+    """Merged view of every worker's file. `own` is read last so a worker's
+    own rows win for the départements it owns."""
+    out: dict = {}
+    for p in status_paths() + ([own] if own and own.exists() else []):
+        try:
+            with p.open(encoding="utf-8-sig", newline="") as fh:
+                for r in csv.DictReader(fh, delimiter=";"):
+                    if r.get("dept"):
+                        out[r["dept"]] = r
+        except Exception as exc:
+            log.warning(f"could not read {p.name}: {exc}")
+    return out
+
+
+def save_status(rows: dict, path: Path = STATUS_PATH) -> None:
+    """Written to a .tmp then replaced, so a reader never sees a half file."""
     OUT_ROOT.mkdir(parents=True, exist_ok=True)
     order = {d: i for i, d in enumerate(METRO_DEPARTEMENTS)}
-    with STATUS_PATH.open("w", encoding="utf-8-sig", newline="") as fh:
+    tmp = path.with_suffix(".csv.tmp")
+    with tmp.open("w", encoding="utf-8-sig", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=STATUS_FIELDS, delimiter=";",
                            extrasaction="ignore")
         w.writeheader()
         for d in sorted(rows, key=lambda x: order.get(x, 999)):
             w.writerow(rows[d])
+    tmp.replace(path)
 
 
 # ---------------------------------------------------------------- the phases
@@ -383,6 +400,10 @@ def main() -> None:
                     help="rebuild départements already marked ok (default: skip them)")
     ap.add_argument("--include-done", action="store_true",
                     help="also rebuild 03 and 63 (their V2 files are already delivered)")
+    ap.add_argument("--worker", default="",
+                    help="name this worker (writes france_status_<name>.csv). Several "
+                         "workers on DISJOINT département lists run in parallel; they "
+                         "must never share one status file.")
     ap.add_argument("--status", action="store_true")
     ap.add_argument("--recap", action="store_true")
     args = ap.parse_args()
@@ -394,13 +415,16 @@ def main() -> None:
         write_recap()
         return
 
+    my_path = (OUT_ROOT / f"france_status_{args.worker}.csv") if args.worker else STATUS_PATH
+
     depts = list(METRO_DEPARTEMENTS) if args.all else parse_departements(args.departements)
     if not depts:
         sys.exit("nothing to do: pass --departements <list|région|all> or --all")
     if not args.include_done:
         depts = [d for d in depts if d not in ALREADY_DONE]
 
-    status = load_status()
+    status = load_status(my_path)
+    mine = {d: r for d, r in status.items() if d in depts}   # this worker's own file
     if not args.redo:
         skip = [d for d in depts if status.get(d, {}).get("status") == "ok"]
         if skip:
@@ -426,21 +450,22 @@ def main() -> None:
             st = build_dept(dept, args.rebuild_only)
         except KeyboardInterrupt:
             log.warning("interrupted — re-run the same command to resume")
-            save_status(status)
+            save_status(mine, my_path)
             raise
         except Exception as exc:                      # never let one dept kill the run
             log.exception(f"[{dept}] unexpected error: {exc}")
             st = {"dept": dept, "region": region_dir(dept), "status": "failed",
                   "failed_step": f"driver: {type(exc).__name__}",
                   "finished": datetime.now().strftime("%Y-%m-%d %H:%M")}
-        status[dept] = st
-        save_status(status)
-        done = sum(1 for d in depts[:i] if status.get(d, {}).get("status") == "ok")
+        mine[dept] = st
+        save_status(mine, my_path)                    # only ever our own départements
+        done = sum(1 for d in depts[:i] if mine.get(d, {}).get("status") == "ok")
         rate = (time.time() - t0) / i
         log.info(f"[{dept}] {st['status']}  rows={st.get('rows', '?')} "
                  f"tel={st.get('phones', '?')} mail={st.get('emails', '?')} "
                  f"joign={st.get('joignables', '?')}  |  {done}/{i} ok, "
-                 f"~{rate * (len(depts) - i) / 60:.0f} min left")
+                 f"~{rate * (len(depts) - i) / 60:.0f} min left"
+                 + (f"  [worker {args.worker}]" if args.worker else ""))
 
     log.info("=" * 70)
     write_recap()
