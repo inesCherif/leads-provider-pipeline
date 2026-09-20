@@ -10,10 +10,10 @@
 #   sh scripts/paca_rebuild.sh v2 v1 04 05 06 13 83 84
 #   sh scripts/paca_rebuild.sh v3 v2 84
 # Log: exports/france_agriculture/logs/paca_rebuild_<version>.log
-export PATH="/c/Program Files/Git/usr/bin:/c/Program Files/Git/bin:/c/Users/USER/AppData/Local/Programs/Python/Python311:$PATH"
+export PATH="/c/Program Files/Git/usr/bin:/c/Program Files/Git/bin:${PYTHON_DIR:+$PYTHON_DIR:}$PATH"
 export PYTHONUNBUFFERED=1 PYTHONIOENCODING=utf-8
 cd "$(dirname "$0")/.." || exit 1
-PY="$(command -v python 2>/dev/null || echo /c/Users/USER/AppData/Local/Programs/Python/Python311/python.exe)"
+PY="$(command -v python 2>/dev/null || command -v python3 2>/dev/null || echo python)"
 V="$1"; BASE="$2"; shift 2
 LOG="exports/france_agriculture/logs/paca_rebuild_$V.log"
 mkdir -p "$(dirname "$LOG")"

@@ -9,7 +9,7 @@ DEPT="${1:-03}"
 WHAT="${2:-eleveurs,agriculteurs,elevages}"
 DONE="exports/eleveurs/checkpoints/pj_done.txt"
 # a detached sh (Start-Process) may not carry the user's PATH
-PY="$(command -v python 2>/dev/null || echo /c/Users/USER/AppData/Local/Programs/Python/Python311/python.exe)"
+PY="$(command -v python 2>/dev/null || command -v python3 2>/dev/null || echo python)"
 LOG="exports/eleveurs/checkpoints/pj_run_${DEPT}.log"
 noprog=0
 for i in $(seq 1 15); do

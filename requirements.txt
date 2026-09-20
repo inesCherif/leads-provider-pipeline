@@ -1,3 +1,6 @@
+# Python 3.11. Install:  pip install -r requirements.txt
+#                        python -m playwright install chromium
+
 pandas==2.2.3
 
 # Excel engines: m1_s1 reads with openpyxl, m1_s3 with calamine (~10x faster on
@@ -5,8 +8,22 @@ pandas==2.2.3
 openpyxl==3.1.5
 python-calamine>=0.2.0
 
+# Supabase / Postgres (M1, M4, and the read-only witnesses m5_s19 / m6_s19 / m7_s19)
 psycopg2-binary>=2.9.9
 python-dotenv>=1.0.0
 
 # Async HTTP for the SIRENE enrichment pass (m1_s4)
 aiohttp>=3.9.0
+
+# Sector pipelines (M2 ... M7, France): registry / directory harvests, site crawl
+requests>=2.32.0
+
+# Rendered pages: Pages Jaunes over an attached Chrome (CDP), Google panels,
+# public Facebook pages. Needs `python -m playwright install chromium` once.
+playwright>=1.58.0
+
+# MX lookups for e-mail verification (m1_s9g, m2_s11 and its wrappers)
+dnspython>=2.7.0
+
+# Key-less web search backend (m2lib_search, ~300 queries/day)
+ddgs>=9.0.0

@@ -11,7 +11,7 @@ WHAT="${2:-}"
 MODE="${3:-}"
 DONE="exports/producteurs/checkpoints/pj_done.txt"
 # a detached sh (Start-Process) may not carry the user's PATH
-PY="$(command -v python 2>/dev/null || echo /c/Users/USER/AppData/Local/Programs/Python/Python311/python.exe)"
+PY="$(command -v python 2>/dev/null || command -v python3 2>/dev/null || echo python)"
 LOG="exports/producteurs/checkpoints/pj_run_${DEPT}.log"
 WHATARG=""
 [ -n "$WHAT" ] && WHATARG="--what $WHAT"

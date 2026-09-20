@@ -10,9 +10,9 @@
 #
 # Four registry pullers at 0.7 s each is ~5.6 req/s, still under the API's
 # documented 7 req/s per IP. Do not add a fifth.
-export PATH="/c/Program Files/Git/usr/bin:/c/Program Files/Git/bin:/c/Users/USER/AppData/Local/Programs/Python/Python311:$PATH"
+export PATH="/c/Program Files/Git/usr/bin:/c/Program Files/Git/bin:${PYTHON_DIR:+$PYTHON_DIR:}$PATH"
 cd "$(dirname "$0")/.." || exit 1
-PY="$(command -v python 2>/dev/null || echo /c/Users/USER/AppData/Local/Programs/Python/Python311/python.exe)"
+PY="$(command -v python 2>/dev/null || command -v python3 2>/dev/null || echo python)"
 D="14,27,50,61,76,22,29,35,56,2A"
 echo "WORKER4 started $(date)"
 "$PY" scripts/france_run.py --departements "$D" --worker w4 --skip-global

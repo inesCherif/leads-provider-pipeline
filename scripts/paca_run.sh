@@ -8,10 +8,10 @@
 #     -ArgumentList 'scripts/paca_run.sh aas scripts/m7_s5a_acheteralasource.py 84 13 83 04 05 06' `
 #     -WorkingDirectory <repo> -WindowStyle Hidden
 # Resume = relaunch: every step it runs keeps its own done-file.
-export PATH="/c/Program Files/Git/usr/bin:/c/Program Files/Git/bin:/c/Users/USER/AppData/Local/Programs/Python/Python311:$PATH"
+export PATH="/c/Program Files/Git/usr/bin:/c/Program Files/Git/bin:${PYTHON_DIR:+$PYTHON_DIR:}$PATH"
 export PYTHONUNBUFFERED=1 PYTHONIOENCODING=utf-8
 cd "$(dirname "$0")/.." || exit 1
-PY="$(command -v python 2>/dev/null || echo /c/Users/USER/AppData/Local/Programs/Python/Python311/python.exe)"
+PY="$(command -v python 2>/dev/null || command -v python3 2>/dev/null || echo python)"
 NAME="$1"; SCRIPT="$2"; shift 2
 LOG="exports/france_agriculture/logs/paca_$NAME.log"
 mkdir -p "$(dirname "$LOG")"

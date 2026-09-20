@@ -11,7 +11,7 @@
 #   Start-Process "C:\Program Files\Git\usr\bin\sh.exe" -ArgumentList 'scripts/paca_pj.sh' `
 #     -WorkingDirectory <repo> -WindowStyle Hidden
 # Logs: exports/producteurs/checkpoints/pj_run_<dept>.log
-export PATH="/c/Program Files/Git/usr/bin:/c/Program Files/Git/bin:/c/Users/USER/AppData/Local/Programs/Python/Python311:$PATH"
+export PATH="/c/Program Files/Git/usr/bin:/c/Program Files/Git/bin:${PYTHON_DIR:+$PYTHON_DIR:}$PATH"
 cd "$(dirname "$0")/.." || exit 1
 DEPTS="${*:-13 84 83 04 05 06}"
 for D in $DEPTS; do

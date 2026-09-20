@@ -10,9 +10,9 @@
 # pd_listings_done.txt, so a crash or a reboot costs at most one fiche, and
 # it hits a different host from the registry, so it can run beside the France
 # run without slowing it.
-export PATH="/c/Program Files/Git/usr/bin:/c/Program Files/Git/bin:/c/Users/USER/AppData/Local/Programs/Python/Python311:$PATH"
+export PATH="/c/Program Files/Git/usr/bin:/c/Program Files/Git/bin:${PYTHON_DIR:+$PYTHON_DIR:}$PATH"
 cd "$(dirname "$0")/.." || exit 1
-PY="$(command -v python 2>/dev/null || echo /c/Users/USER/AppData/Local/Programs/Python/Python311/python.exe)"
+PY="$(command -v python 2>/dev/null || command -v python3 2>/dev/null || echo python)"
 LOG="exports/france_agriculture/pd_harvest.log"
 mkdir -p exports/france_agriculture
 

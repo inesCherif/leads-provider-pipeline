@@ -7,10 +7,10 @@
 # Pilot 2026-09-20: 20 pages -> 16 e-mails, 14 phones (80 %), 0 walled; pool 161.
 #   Start-Process "C:\Program Files\Git\usr\bin\sh.exe" -ArgumentList 'scripts/paca_social.sh' `
 #     -WorkingDirectory <repo> -WindowStyle Hidden
-export PATH="/c/Program Files/Git/usr/bin:/c/Program Files/Git/bin:/c/Users/USER/AppData/Local/Programs/Python/Python311:$PATH"
+export PATH="/c/Program Files/Git/usr/bin:/c/Program Files/Git/bin:${PYTHON_DIR:+$PYTHON_DIR:}$PATH"
 export PYTHONUNBUFFERED=1 PYTHONIOENCODING=utf-8
 cd "$(dirname "$0")/.." || exit 1
-PY="$(command -v python 2>/dev/null || echo /c/Users/USER/AppData/Local/Programs/Python/Python311/python.exe)"
+PY="$(command -v python 2>/dev/null || command -v python3 2>/dev/null || echo python)"
 SCOPE="${1:-Provence-Alpes-Cote-d-Azur}"
 LOG="exports/france_agriculture/logs/paca_social.log"
 mkdir -p "$(dirname "$LOG")"

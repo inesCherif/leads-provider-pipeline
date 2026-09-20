@@ -6,9 +6,9 @@
 # rewrites a single shared agencebio_listings.csv, so it runs ONCE at the end,
 # never while a matcher might be reading it. The départements built before it
 # lands pick it up in the final --rebuild-only pass, which costs no network.
-export PATH="/c/Program Files/Git/usr/bin:/c/Program Files/Git/bin:/c/Users/USER/AppData/Local/Programs/Python/Python311:$PATH"
+export PATH="/c/Program Files/Git/usr/bin:/c/Program Files/Git/bin:${PYTHON_DIR:+$PYTHON_DIR:}$PATH"
 cd "$(dirname "$0")/.." || exit 1
-PY="$(command -v python 2>/dev/null || echo /c/Users/USER/AppData/Local/Programs/Python/Python311/python.exe)"
+PY="$(command -v python 2>/dev/null || command -v python3 2>/dev/null || echo python)"
 LOG="exports/france_agriculture/agencebio.log"
 mkdir -p exports/france_agriculture
 
