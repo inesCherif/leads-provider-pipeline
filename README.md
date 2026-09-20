@@ -132,7 +132,10 @@ définir `SUPABASE_ACCESS_TOKEN` comme variable d'environnement **du shell** (Cl
 - **Respect des sites** : `robots.txt` lu, débit limité, aucune connexion à un compte, pages
   publiques uniquement.
 
-## Données
+## Licence et données
+
+Le code est publié sous licence MIT (voir `LICENSE`).
+
 
 Aucune donnée de prospect n'est dans ce dépôt. Les fichiers produits contiennent des données
 d'entreprises issues de sources publiques ; leur usage en prospection relève du RGPD et de la
