@@ -33,9 +33,13 @@ from m2lib_contact import normalize_fr_phone                                # no
 from m7_lib import (CHECK_DIR, LISTING_FIELDS, LISTING_DELAY,               # noqa: E402
                     make_session, get, strip, listing_excluded, dept_of_cp,
                     read_csv, append_rows, load_done, mark_done, is_social)
+from france_lib import in_dept                                             # noqa: E402
 
 BASE = "https://www.jours-de-marche.fr"
-DEPT_SLUGS = {"03": "03-allier", "63": "63-puy-de-dome", "15": "15-cantal", "43": "43-haute-loire", "42": "42-loire"}
+DEPT_SLUGS = {"03": "03-allier", "63": "63-puy-de-dome", "15": "15-cantal", "43": "43-haute-loire", "42": "42-loire",
+              # PACA (2026-09-20) — read off the site's own /producteur-local/ index (95 slugs), not guessed
+              "04": "04-alpes-de-haute-provence", "05": "05-hautes-alpes", "06": "06-alpes-maritimes",
+              "13": "13-bouches-du-rhone", "83": "83-var", "84": "84-vaucluse"}
 SOURCE = "jours_de_marche"
 LIST_DONE = CHECK_DIR / "jdm_listings_done.txt"
 OUT_PATH = CHECK_DIR / "jdm_listings.csv"
@@ -92,7 +96,23 @@ def main() -> None:
     html = get(sess, f"{BASE}/producteur-local/{slug}/", log)
     if not html:
         sys.exit("index page empty")
-    urls = sorted(set(re.findall(r'href="(https://www\.jours-de-marche\.fr/producteur-local/[^"]+-\d+\.html)"', html)))
+    fiche_re = r'href="(https://www\.jours-de-marche\.fr/producteur-local/[^"]+-\d+\.html)"'
+    urls = set(re.findall(fiche_re, html))
+    # The département page prints its first 20 fiches and NO pagination (measured
+    # 2026-09-20: Vaucluse announces 41, serves 20; /2/, ?page=2 return page 1).
+    # The rest is reached through the commune pages it links. 03 / 63 never showed
+    # it: they hold fewer than 20 fiches each.
+    communes = sorted(set(re.findall(r'href="(https://www\.jours-de-marche\.fr/producteur-local/(\d{5})-[a-z0-9-]+/)"', html)))
+    n_dept = len(urls)
+    for cu, cp in communes:
+        if not in_dept(cp, dept):
+            continue
+        ch = get(sess, cu, log)
+        if ch:
+            urls |= set(re.findall(fiche_re, ch))
+        time.sleep(LISTING_DELAY)
+    log.info(f"[{dept}] département page {n_dept} fiches, + {len(urls) - n_dept} through {len(communes)} commune pages")
+    urls = sorted(urls)
     done = load_done(LIST_DONE)
     todo = [u for u in urls if u.rsplit("-", 1)[-1].split(".")[0] not in done]
     log.info(f"[{dept}] index: {len(urls)} producteurs, {len(todo)} to open")
