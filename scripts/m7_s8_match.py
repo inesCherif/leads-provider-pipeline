@@ -57,6 +57,7 @@ SOURCES = [
     (CHECK_DIR / "jdm_listings.csv",            "jours_de_marche",   ";"),
     (CHECK_DIR / "bf_listings.csv",             "bonfromager",       ";"),
     (CHECK_DIR / "dnf_listings.csv",            "denosfermes63",     ";"),
+    (CHECK_DIR / "bp06_listings.csv",           "biopaca06",         ";"),   # Agribio 06 map, ODbL (2026-09-20)
     (CHECK_DIR / "pj_listings.csv",             "pagesjaunes",       ";"),
     (INHERITED_ELEVEURS / "pj_listings.csv",    "pagesjaunes",       ";"),
     (INHERITED_AGRI / "pj_listings.csv",        "pagesjaunes",       ";"),
@@ -68,7 +69,7 @@ SOURCES = [
     (CHECK_DIR / "social_emails.csv",           "social_fb",         ";"),   # m7_s18 — public Facebook pages
 ]
 SOCIAL_CP: dict = {}      # siret -> postcode of OUR population, set in main() before load_listings
-M7_SOURCES = {"acheteralasource", "producteur_direct", "fermes_locales", "jours_de_marche", "bonfromager", "denosfermes63"}
+M7_SOURCES = {"acheteralasource", "producteur_direct", "fermes_locales", "jours_de_marche", "bonfromager", "denosfermes63", "biopaca06"}
 PJ_SEEN: set = set()
 # db_claims sources that never become a witness here (same rule as m6_s8)
 CLAIM_SKIP = {"deliverable", "validator"}

@@ -79,13 +79,13 @@ COLUMNS = M3AG_COLUMNS + M6_COLUMNS
 # The M7 direct-sales directories (2026-09-11) are owner-declared listings,
 # ranked with bienvenue-à-la-ferme, above Pages Jaunes (m7_s9 measures the
 # pairwise agreement; acheteralasource 90 % of 10, producteur.direct 77 % of 13).
-DIRECTORIES = ["jours_de_marche", "denosfermes63", "acheteralasource", "producteur_direct", "fermes_locales"]
+DIRECTORIES = ["jours_de_marche", "denosfermes63", "biopaca06", "acheteralasource", "producteur_direct", "fermes_locales"]
 PHONE_RANK = ["agencebio", "osm", "bienvenue_ferme"] + DIRECTORIES + ["pagesjaunes", "google_panel",
               "site/confirme", "corrobore"]
 EMAIL_RANK = ["agencebio", "jours_de_marche", "producteur_direct", "fermes_locales", "bonfromager",
-              "denosfermes63", "acheteralasource", "site/confirme", "site/probable", "bienvenue_ferme",
+              "denosfermes63", "biopaca06", "acheteralasource", "site/confirme", "site/probable", "bienvenue_ferme",
               "osm", "pagesjaunes", "provider", "site/non verifie", "snippet"]
-SITE_RANK = ["agencebio", "osm", "producteur_direct", "acheteralasource", "fermes_locales", "jours_de_marche",
+SITE_RANK = ["agencebio", "osm", "producteur_direct", "acheteralasource", "fermes_locales", "jours_de_marche", "biopaca06",
              "pagesjaunes", "bienvenue_ferme", "site/confirme", "crawl"]
 DIALABLE = set(PHONE_RANK)
 DB_VERDICT_FR = {"valid": "valide", "invalid": "invalide", "risky": "risque", "malformed": "invalide",

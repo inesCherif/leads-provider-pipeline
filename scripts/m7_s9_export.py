@@ -82,18 +82,20 @@ COLUMNS = M3AG_COLUMNS + M7_COLUMNS
 SANS_SIRET_COLUMNS = ["name", "contact", "phone", "mobile", "email", "email_statut", "website",
                       "address", "postcode", "city", "sous_segment", "description", "source", "url"]
 
-DIRECTORIES = ["jours_de_marche", "denosfermes63", "acheteralasource", "producteur_direct",
+# biopaca06 (Agribio 06 map, 2026-09-20): same family as denosfermes63 — a local directory the
+# producers fill themselves — so it sits right after it. Rank NOT yet measured by agreement.
+DIRECTORIES = ["jours_de_marche", "denosfermes63", "biopaca06", "acheteralasource", "producteur_direct",
                "fermes_locales", "bonfromager"]
-PHONE_RANK = ["agencebio", "osm", "bienvenue_ferme", "jours_de_marche", "denosfermes63",
+PHONE_RANK = ["agencebio", "osm", "bienvenue_ferme", "jours_de_marche", "denosfermes63", "biopaca06",
               "acheteralasource", "producteur_direct", "fermes_locales", "pagesjaunes",
               "google_panel", "site/confirme", "corrobore"]
 EMAIL_RANK = ["agencebio", "jours_de_marche", "producteur_direct", "fermes_locales", "bonfromager",
-              "denosfermes63", "acheteralasource", "site/confirme", "site/probable", "bienvenue_ferme",
+              "denosfermes63", "biopaca06", "acheteralasource", "site/confirme", "site/probable", "bienvenue_ferme",
               "osm", "pagesjaunes", "provider", "social_fb", "site/non verifie", "snippet"]
 SITE_RANK = ["agencebio", "osm", "producteur_direct", "acheteralasource", "fermes_locales",
-             "jours_de_marche", "pagesjaunes", "bienvenue_ferme", "site/confirme", "crawl"]
+             "jours_de_marche", "biopaca06", "pagesjaunes", "bienvenue_ferme", "site/confirme", "crawl"]
 CONTEXT_RANK = ["producteur_direct", "acheteralasource", "fermes_locales", "jours_de_marche",
-                "denosfermes63", "bonfromager"]
+                "denosfermes63", "biopaca06", "bonfromager"]
 DIALABLE = set(PHONE_RANK)          # the provider file is NOT here: 73 % measured, a witness only
 DB_VERDICT_FR = {"valid": "valide", "invalid": "invalide", "risky": "risque", "malformed": "invalide",
                  "valide": "valide", "invalide": "invalide", "risque": "risque"}

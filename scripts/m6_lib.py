@@ -152,6 +152,7 @@ PHONE_SOURCE_FR = {
     "fermes_locales": "fiche Fermes locales",
     "bonfromager": "fiche Bon Fromager",
     "denosfermes63": "annuaire De nos fermes 63 (Conseil départemental)",
+    "biopaca06": "carte « Où trouver des produits bio » Alpes-Maritimes (Agribio 06)",
     "pagesjaunes": "Pages Jaunes",
     "site/mentions_legales": "mentions légales du site de l'exploitation",
     "site/confirme": "site web de l'exploitation",

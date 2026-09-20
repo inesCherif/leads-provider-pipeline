@@ -60,6 +60,7 @@ SOURCES = [
     (M7_DIR / "jdm_listings.csv",              "jours_de_marche", ";"),
     (M7_DIR / "bf_listings.csv",               "bonfromager",     ";"),
     (M7_DIR / "dnf_listings.csv",              "denosfermes63",   ";"),
+    (M7_DIR / "bp06_listings.csv",             "biopaca06",       ";"),   # Agribio 06 map, ODbL (2026-09-20)
     (M7_DIR / "pj_listings.csv",               "pagesjaunes",     ";"),   # M7's trade slugs (2026-09-11) list éleveurs too
     (INHERITED_DIR / "pj_listings.csv",        "pagesjaunes",     ";"),
     (INHERITED_DIR / "osm_listings.csv",       "osm",             ";"),
@@ -244,7 +245,7 @@ def detail_of(L: dict, src: str) -> str:
                 f"siren={L.get('siren','')}; file={L.get('source_file','')}")
     if src == "pagesjaunes":
         return f"category={L.get('category','')}"
-    if src in ("acheteralasource", "producteur_direct", "fermes_locales", "jours_de_marche", "bonfromager", "denosfermes63"):
+    if src in ("acheteralasource", "producteur_direct", "fermes_locales", "jours_de_marche", "bonfromager", "denosfermes63", "biopaca06"):
         return f"contact={L.get('alt_name','')}; categorie={L.get('categorie','')[:100]}; description={L.get('description','')[:200]}"
     return ""
 
