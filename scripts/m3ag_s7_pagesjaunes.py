@@ -387,7 +387,12 @@ def dismiss_consent(page) -> None:
             pass
 
 
-PJ_DEPT_SLUG = {"63": "puy-de-dome-63", "03": "allier-03", "13": "bouches-du-rhone-13"}
+PJ_DEPT_SLUG = {"63": "puy-de-dome-63", "03": "allier-03", "13": "bouches-du-rhone-13",
+                # PACA (Sam's priority, 2026-09-20). Same <name>-<code> shape as the three
+                # above; each one is CONFIRMED by its first page (`--pilot 1`: cards whose
+                # postcodes are in the département) before its full run.
+                "04": "alpes-de-haute-provence-04", "05": "hautes-alpes-05",
+                "06": "alpes-maritimes-06", "83": "var-83", "84": "vaucluse-84"}
 DEPT_LEVEL_CAP = 400              # 20 pages x 20 cards: past that a dept page is truncated by PJ
 RESULTS_COUNT_RE = re.compile(r"(\d[\d\s  ]{0,6})\s*r[ée]sultats?", re.I)
 DEPT_MARK = "__departement__"     # pseudo-commune used by --dept-level
