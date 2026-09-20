@@ -96,6 +96,26 @@ SITE_RANK = ["agencebio", "osm", "producteur_direct", "acheteralasource", "ferme
              "jours_de_marche", "biopaca06", "pagesjaunes", "bienvenue_ferme", "site/confirme", "crawl"]
 CONTEXT_RANK = ["producteur_direct", "acheteralasource", "fermes_locales", "jours_de_marche",
                 "denosfermes63", "biopaca06", "bonfromager"]
+
+# A source we never ranked is a source we never measured. `db_claims` carries the
+# OLD pipeline's vocabulary verbatim (`faible`, `site/faible`, `piste`,
+# `serper_places`, `verify/smtp`, `confirme`), and those labels used to skip the
+# one-witness test below because it listed its three weak sources by hand — so
+# `faible`, which this project MEASURED at 17 % and banned from the dialled
+# column, was shipping e-mails with no name test at all. Measured in dept 13 on
+# 2026-09-20: BOUCHERIE DU PALAIS shipped info@palette-escapade.fr, LA CHEVRERIE
+# D'ALLAUCH shipped a beekeeper's contact@au-royaume-des-abeilles.fr (the claim
+# is db_claims' for LES MOULINS D'ALLAUCH — attached to the wrong SIRET by the
+# matcher), and one address sat on two different SIRET. The name test keeps the
+# one that is right (LES MACARONS DE CAROLINE -> lesmacaronsdecaroline13@) and
+# drops the other two. Unknown must mean weak, never strong.
+WEAK_EMAIL_SOURCES = ("site/non verifie", "snippet", "social_fb")
+
+
+def needs_name(src: str) -> bool:
+    """This source ships an e-mail only when the address carries the farm's name."""
+    return src in WEAK_EMAIL_SOURCES or src not in EMAIL_RANK
+
 DIALABLE = set(PHONE_RANK)          # the provider file is NOT here: 73 % measured, a witness only
 DB_VERDICT_FR = {"valid": "valide", "invalid": "invalide", "risky": "risque", "malformed": "invalide",
                  "valide": "valide", "invalide": "invalide", "risque": "risque"}
@@ -325,7 +345,7 @@ def main() -> None:
             flat = e.replace(".", "").replace("-", "").replace("_", "").replace("@", "")
             return any(t.lower() in flat for t in strong)
         before = len(uniq)
-        uniq = [(e, s) for e, s in uniq if s not in ("site/non verifie", "snippet", "social_fb") or named(e)]
+        uniq = [(e, s) for e, s in uniq if not needs_name(s) or named(e)]
         stats["e-mail withheld: one witness, no farm name in address"] += before - len(uniq)
         uniq.sort(key=lambda x: (rank(EMAIL_RANK, x[1]), 0 if verified.get(x[0]) == "valide" else 1,
                                  0 if named(x[0]) else 1))
