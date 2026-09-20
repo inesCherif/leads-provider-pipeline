@@ -29,6 +29,7 @@ if hasattr(sys.stdout, "reconfigure"):
 from m2lib_contact import FREE_MAIL, is_surtaxe, plausible_fr_number   # noqa: E402
 from m3ag_s12_check import PHONE_RE, EMAIL_RE, MAIRIE_RE, EXTRA_FREE_MAIL   # noqa: E402
 from m3ag_lib import site_key                                             # noqa: E402
+from m7_s9_export import EMAIL_RANK                                        # noqa: E402  (H18: the ranks ARE the contract)
 from m7_lib import (OUT_DIR, CHECK_DIR, INHERITED_AGRI, INHERITED_ELEVEURS, read_csv,   # noqa: E402
                     is_aggregator, root_domain, EXCLUDED_NAF, EXCLUDED_RE, EXCLUDED_LOOSE_RE, NON_PRODUCER_RE,
                     host_hits, phone_digits, load_principle_rescue, name_hit_is_surname)
@@ -112,6 +113,16 @@ def main() -> None:
 
     prov_dial = [r for r in tels if str(r["source_telephone"]).split("(")[0] == "provider"]
     check(not prov_dial, f"H16 the provider file is never the dialled source on this file ({len(prov_dial)})")
+
+    # H18 — an e-mail may only ship under a source we RANKED. db_claims carries the
+    # old pipeline's labels verbatim (faible, site/faible, piste, serper_places,
+    # verify/smtp), and an unranked label used to skip the one-witness name test:
+    # dept 13 shipped info@palette-escapade.fr on a butcher and a beekeeper's
+    # address on a goat farm (2026-09-20). needs_name() closed it; this makes it
+    # un-reintroducible. A NEW source must be added to EMAIL_RANK to ship at all.
+    unranked = [r for r in rows if g(r, "email_final") and g(r, "source_email").split("(")[0] not in EMAIL_RANK]
+    check(not unranked, f"H18 every shipped e-mail carries a ranked source "
+                        f"({len(unranked)}: {sorted({g(r, 'source_email') for r in unranked})[:4]})")
 
     corr = [r for r in tels if str(r["source_telephone"]).startswith("corrobore")]
     bad_corr = [r for r in corr if len(re.findall(r"[^+()]+", str(r["source_telephone"])[10:].strip("()"))) < 2]
