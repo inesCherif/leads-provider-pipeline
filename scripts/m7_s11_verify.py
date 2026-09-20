@@ -14,9 +14,18 @@ search_hits.csv (m7_s3).
 Residential-IP wall (Orange/SFR/Outlook/Yahoo refuse probes): many
 consumer mailboxes come back `non verifie` — our limit, not the address's.
 
+`--departements` (a list, a région name, or `all` — france_lib) scopes the run:
+matched_/unmatched_ files of THOSE départements, and the shared files
+(provider_agri, db_claims, site_contacts, search_hits) filtered to them. The
+shared files have been NATIONAL since 2026-09-19, so without the scope a run
+for six départements would probe the whole country's addresses. Without the
+flag nothing changes: 03 / 63, shared files read whole. verified_emails.csv
+has no département column, so a verdict serves every département's export.
+
 Usage:
     python scripts/m7_s11_verify.py
     python scripts/m7_s11_verify.py --limit 30
+    python scripts/m7_s11_verify.py --departements Provence-Alpes-Cote-d-Azur
 """
 
 import csv
@@ -27,13 +36,38 @@ PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
 sys.path.insert(0, str(PROJECT_ROOT))
 import m2_s11_verify as core                                        # noqa: E402
-from m7_lib import CHECK_DIR, INHERITED_AGRI, INHERITED_ELEVEURS, DEPARTEMENTS   # noqa: E402
+from m7_lib import CHECK_DIR, INHERITED_AGRI, INHERITED_ELEVEURS, DEPARTEMENTS, dept_of_cp   # noqa: E402
+from france_lib import parse_departements                           # noqa: E402
+
+
+def pop_departements() -> list[str]:
+    """--departements is ours, not the core's: strip it before m2_s11 parses argv."""
+    if "--departements" not in sys.argv:
+        return []
+    i = sys.argv.index("--departements")
+    if i + 1 >= len(sys.argv):
+        sys.exit("--departements needs a value (a list, a région name, or all)")
+    spec = sys.argv[i + 1]
+    del sys.argv[i:i + 2]
+    return parse_departements(spec)
+
+
+SCOPE = pop_departements()                 # [] = the historical behaviour, untouched
+DEPTS = SCOPE or list(DEPARTEMENTS)
 
 SOURCES = [("site_contacts.csv", "email"), ("search_hits.csv", "emails"),
            ("provider_agri.csv", "email"), ("db_claims.csv", "email"),       # m7_s19 (V2)
            ("social_emails.csv", "email")]                                   # m7_s18 (V2)
-SOURCES += [(f"matched_{d}.csv", "email") for d in DEPARTEMENTS]
-SOURCES += [(f"unmatched_{d}.csv", "email") for d in DEPARTEMENTS]
+SOURCES += [(f"matched_{d}.csv", "email") for d in DEPTS]
+SOURCES += [(f"unmatched_{d}.csv", "email") for d in DEPTS]
+
+
+def out_of_scope(r: dict) -> bool:
+    """A row of a shared (national) file that belongs to another département."""
+    if not SCOPE:
+        return False
+    d = (r.get("dept") or "").strip() or dept_of_cp(r.get("codePostal") or r.get("postcode") or "")
+    return bool(d) and d not in SCOPE
 
 
 def already_verified() -> set:
@@ -66,6 +100,8 @@ def collect_emails() -> dict:
             for r in csv.DictReader(fh, delimiter=";"):
                 if fname == "provider_agri.csv" and r.get("email_verified") == "1":
                     continue                      # S9-G already said valid
+                if out_of_scope(r):
+                    continue
                 for e in (r.get(col) or "").split("|"):
                     e = e.strip().lower()
                     if "@" not in e:
