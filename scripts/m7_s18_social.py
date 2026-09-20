@@ -24,6 +24,7 @@ reads), social_emails.csv (m2_s18 FIELDNAMES), social_done.txt.
 Usage:
     python scripts/m7_s18_social.py --pilot 20     # go/no-go 30 % (6 of 20)
     python scripts/m7_s18_social.py
+    python scripts/m7_s18_social.py --departements Provence-Alpes-Cote-d-Azur --pilot 20
 """
 
 import csv
@@ -38,6 +39,24 @@ PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
 import m2_s18_social_emails as core                                   # noqa: E402
 from m7_lib import CHECK_DIR, OUT_DIR, DEPARTEMENTS, read_csv         # noqa: E402
+from france_lib import parse_departements                             # noqa: E402
+
+
+def pop_departements() -> list[str]:
+    """--departements is ours, not the core's: strip it before m2_s18 parses argv."""
+    if "--departements" not in sys.argv:
+        return []
+    i = sys.argv.index("--departements")
+    if i + 1 >= len(sys.argv):
+        sys.exit("--departements needs a value (a list, a région name, or all)")
+    spec = sys.argv[i + 1]
+    del sys.argv[i:i + 2]
+    return parse_departements(spec)
+
+
+# The pool only ever holds operators of these départements (the shared files
+# site_contacts / search_hits are joined on them), so this IS the scope.
+DEPTS = pop_departements() or list(DEPARTEMENTS)
 
 POOL_PATH = CHECK_DIR / "social_pool.csv"
 OURS_PATH = CHECK_DIR / "social_ours.csv"
@@ -84,7 +103,7 @@ def fb_root(url: str) -> str:
 def build_pool() -> list[dict]:
     """Every Facebook page URL the sector holds, one row per (business, page)."""
     ops, emailed, pseudo_cp, names = {}, set(), {}, {}
-    for d in DEPARTEMENTS:
+    for d in DEPTS:
         for r in read_csv(CHECK_DIR / f"operateurs_{d}.csv", delim=","):
             rid = r["siret"] or f"X{r.get('siren', '')}"
             ops[rid] = r
@@ -121,7 +140,7 @@ def build_pool() -> list[dict]:
 
     for r in read_csv(CHECK_DIR / "site_contacts.csv"):
         add(r["row_id"], r.get("facebook", ""), "site_crawl")
-    for d in DEPARTEMENTS:
+    for d in DEPTS:
         for r in read_csv(CHECK_DIR / f"matched_{d}.csv"):
             add(r["row_id"], r.get("website", ""), f"{r['source']}:website")
         for u in read_csv(CHECK_DIR / f"unmatched_{d}.csv"):
