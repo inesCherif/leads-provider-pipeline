@@ -19,7 +19,7 @@ mkdir -p "$(dirname "$LOG")"
   echo "PACA $NAME ($SCRIPT) started $(date) — départements: $*"
   for D in "$@"; do
     echo "=== [$D] $(date)"
-    "$PY" "$SCRIPT" --departement "$D"
+    "$PY" "$SCRIPT" --departement "$D" $EXTRA      # EXTRA="--refresh" etc., from the environment
   done
   echo "PACA $NAME finished $(date)"
 } >> "$LOG" 2>&1

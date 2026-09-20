@@ -320,7 +320,11 @@ def main() -> None:
 
     def reject(L: dict, src: str, why: str, keep: bool = True) -> None:
         rejects[why] += 1
-        if not (keep and src in M7_SOURCES and ((L.get("phone") or "").strip() or (L.get("email") or "").strip())):
+        # bienvenue-à-la-ferme joins the Sans SIRET tab ONLY with its fiche text (m3ag_s10, 2026-09-20):
+        # without it the loose principle below is blind — dept 84's unmatched fiches were wine
+        # estates of Gigondas and an apple farm selling cidre, bière and rhum.
+        kept_source = src in M7_SOURCES or (src == "bienvenue_ferme" and (L.get("description") or "").strip())
+        if not (keep and kept_source and ((L.get("phone") or "").strip() or (L.get("email") or "").strip())):
             return
         # no NAF can vouch for an unmatched row: the LOOSE principle applies
         blob = " ".join(L.get(k, "") for k in ("name", "categorie", "productions", "description"))

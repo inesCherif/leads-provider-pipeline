@@ -29,6 +29,7 @@ Usage:
 """
 
 import argparse
+import csv
 import html as htmlmod
 import logging
 import re
@@ -65,7 +66,16 @@ OUT_PATH = CHECK_DIR / "baf_listings.csv"
 
 INDEX_FIELDS = ["path", "region", "dept_slug", "commune_slug", "slug", "listing_id"]
 FIELDNAMES = ["listing_id", "dept", "name", "alt_name", "phone", "mobile", "email",
-              "website", "city", "postcode", "address", "url"]
+              "website", "city", "postcode", "address", "url",
+              # 2026-09-20 (PACA): what the fiche SAYS it produces. Without it the principle
+              # is blind on this source — dept 84 had 83 unmatched fiches, 80 with an e-mail,
+              # a good part of them wine estates (Gigondas, Sarrians), and an apple farm
+              # selling cidre, bière and rhum. `description` = the <main> text the
+              # principle regexes read; `productions` = the "Productions de la ferme" line.
+              "productions", "description"]
+DESC_MAX = 4000
+PROD_RE = re.compile(r"Productions de la ferme\s*:\s*(.{0,500}?)"
+                     r"(?=Productions labellis|Labels? |Langues|Horaires|Moyens de paiement|$)")
 
 EMAIL_BLOCKLIST = ("exemple.com", "example.com", "sentry.io", "wix", "@2x",
                    "chambagri.fr", "bienvenue-a-la-ferme")
@@ -173,10 +183,35 @@ def parse_listing(html: str, path: str, dept: str) -> dict:
         if t and not re.search(r"T[ée]l|Site|@|\d{2} \d{2}|contact", t, re.I) and len(t) < 80:
             contact = t
             break
+    main = re.search(r"<main.*?</main>", html, re.S)
+    text = strip(re.sub(r"<script.*?</script>|<style.*?</style>", " ", main.group(0) if main else "", flags=re.S))
+    pm = PROD_RE.search(text)
     return {"listing_id": ext_id, "dept": dept, "name": name[:200], "alt_name": contact,
             "phone": phone, "mobile": mobile, "email": emails[0] if emails else "",
             "website": site, "city": commune_slug.replace("-", " ").title(),
-            "postcode": "", "address": "", "url": BASE + path}
+            "postcode": "", "address": "", "url": BASE + path,
+            "productions": pm.group(1).strip()[:500] if pm else "", "description": text[:DESC_MAX]}
+
+
+def upgrade_file(drop_ids: set, drop_dept: str) -> None:
+    """Rewrite baf_listings.csv under the CURRENT header (older rows get empty new columns) and,
+    for --refresh, without one département's rows; its ids leave the done-file too."""
+    rows = read_csv(OUT_PATH) if OUT_PATH.exists() else []
+    if rows and set(FIELDNAMES) <= set(rows[0].keys()) and not drop_dept:
+        return
+    kept = [r for r in rows if not (drop_dept and r.get("dept") == drop_dept)]
+    tmp = OUT_PATH.with_suffix(".tmp")
+    with tmp.open("w", encoding="utf-8-sig", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=FIELDNAMES, delimiter=";", quoting=csv.QUOTE_MINIMAL,
+                           extrasaction="ignore")
+        w.writeheader()
+        w.writerows({k: r.get(k, "") for k in FIELDNAMES} for r in kept)
+    tmp.replace(OUT_PATH)
+    if drop_ids and LIST_DONE.exists():
+        ids = [x for x in LIST_DONE.read_text(encoding="utf-8").split() if x not in drop_ids]
+        LIST_DONE.write_text("".join(f"{x}\n" for x in ids), encoding="utf-8")
+    log.info(f"baf_listings.csv rewritten under the current header: {len(kept)} rows kept"
+             + (f", dept {drop_dept} dropped for a refresh ({len(rows) - len(kept)} rows)" if drop_dept else ""))
 
 
 def main() -> None:
@@ -184,6 +219,8 @@ def main() -> None:
     ap.add_argument("--departement", default="63")
     ap.add_argument("--pilot", type=int, default=0, help="only N index pages")
     ap.add_argument("--dump", action="store_true", help="save the first listing's HTML")
+    ap.add_argument("--refresh", action="store_true",
+                    help="re-open this département's fiches (drops its rows and done ids first)")
     args = ap.parse_args()
     dept = args.departement
     slugs = DEPT_SLUGS.get(dept)
@@ -197,6 +234,7 @@ def main() -> None:
     walk_index(sess, args.pilot)
     index = read_csv(INDEX_PATH)
     mine = [r for r in index if r["dept_slug"] in slugs]
+    upgrade_file({r["listing_id"] for r in mine} if args.refresh else set(), dept if args.refresh else "")
     seen_ids, todo = set(), []
     for r in mine:
         if r["listing_id"] not in seen_ids:
