@@ -46,7 +46,11 @@ BASE = "https://www.bienvenue-a-la-ferme.com"
 SEARCH = BASE + "/fr/recherche?what=&where=&page={page}"
 LISTING_RE = re.compile(r"^/fr/([a-z0-9-]+)/([a-z0-9-]+)/([a-z0-9-]+)/[a-z-]+/([a-z0-9-]+)/(\d+)")
 DEPT_SLUGS = {"63": ("puy-de-dome",), "03": ("allier",), "43": ("haute-loire",),
-              "15": ("cantal",), "42": ("loire",), "23": ("creuse",)}
+              "15": ("cantal",), "42": ("loire",), "23": ("creuse",),
+              # PACA (Sam's priority, 2026-09-20) — slugs READ from the cached index, not guessed:
+              # 68 / 57 / 20 / 37 / 45 / 132 listings
+              "04": ("alpes-de-haute-provence",), "05": ("hautes-alpes",), "06": ("alpes-maritimes",),
+              "13": ("bouches-du-rhone",), "83": ("var",), "84": ("vaucluse",)}
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
