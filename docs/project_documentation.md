@@ -1,5 +1,10 @@
 # Leads Provider — Data Pipeline Documentation
 
+> **Note (handover, 2026-09-20).** This is a reference document kept as it was written.
+> It sometimes cites working notes that are not part of this repository (per-sector work
+> logs `*_progress.md`, `implementation_plan_leads.md`, session handoffs). The current
+> commands are in `docs/RUNBOOK.md`; the rules and conventions in `CLAUDE.md`.
+
 > **Author**: Ines Cherif (Data Engineering Intern)
 > **Last updated**: 2026-07-18
 > **Repository**: [leads-provider-data-pipeline](https://github.com/inesCherif/leads-provider-data-pipeline)
@@ -1107,8 +1112,7 @@ leads_provider_codes/
 |-- .gitignore
 |-- CLAUDE.md                      # Working conventions + settled decisions
 |-- README.md                      # Quick-start README
-|-- implementation_plan_leads.md   # Milestone breakdown and done-criteria
-|-- requirements.txt               # Python dependencies (OUT OF SYNC - see roadmap)
+|-- requirements.txt               # Python dependencies
 |-- config/
 |   +-- sector_rules.py            # Qualification rules + RULE_VERSION
 |-- docs/

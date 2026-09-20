@@ -1,5 +1,10 @@
 # Enrichment sector 2 (boulangeries dept 13) — the complete documentation
 
+> **Note (handover, 2026-09-20).** This is a reference document kept as it was written.
+> It sometimes cites working notes that are not part of this repository (per-sector work
+> logs `*_progress.md`, `implementation_plan_leads.md`, session handoffs). The current
+> commands are in `docs/RUNBOOK.md`; the rules and conventions in `CLAUDE.md`.
+
 Written 2026-08-13, at the end of the V4 session, so that **any new session can
 resume cold**. Everything here was measured on this machine; nothing is assumed.
 
@@ -30,7 +35,7 @@ three times. Supabase ingestion is a later step, after delivery.
 | V2 | 2026-08-13 | 105 | 34 | 57 | 6.6% | OSM harvest + site crawl; every scraped source blocked |
 | V3 | 2026-08-13 | 590 | 242 | 1,297 | 39.1% | **Free-tier APIs**: Serper /maps geo-sweep, Tavily, ddgs |
 | V4 | 2026-08-13 | 674 | 333 | 1,302 | 47.7% | Named queries, SMTP-proven patterns, corroboration |
-| V5 | 2026-08-13 | **721** | **287**¹ | **1,010**¹ | **48.2%** | Tavily name-gated SERP mining + the aggregator purge ([entry](../m2_progress.md)) |
+| V5 | 2026-08-13 | **721** | **287**¹ | **1,010**¹ | **48.2%** | Tavily name-gated SERP mining + the aggregator purge |
 
 ¹ V5's e-mail/site counts are LOWER because **V4 was contaminated**: 56 of its
 333 e-mails and ~290 of its "sites" were aggregator/registry pages sold as the
@@ -59,7 +64,6 @@ unreachable, check whether it has an API.** The full doctrine is in
    (serper 2,299/2,500 used · tavily counter says 1,000/1,000 but a **new key
    is in `.env`** → the counter needs the planned `--reset-pool tavily` ·
    ddgs 300/day, resets daily).
-3. Chronological narrative with every measurement: `docs/m2_progress.md`
-   (newest entry first).
+3. Commands, durations and resume rules for every sector: `docs/RUNBOOK.md`.
 4. The wider project (agriculture, Supabase pipeline, working conventions):
-   `CLAUDE.md` at the repo root — section "NEXT SESSION STARTS HERE".
+   `CLAUDE.md` at the repo root — section "Current state and open items".

@@ -6,7 +6,7 @@ STRUCTURE. They cannot guard DISTRIBUTION, and every bug in this project's
 history was a distribution bug: a column that went 0% populated, a collapse
 that stopped being unique, a duplicate rate that tripled.
 
-Each assertion below maps to a real incident (docs/course/12-the-mistakes.md):
+Each assertion below maps to a real incident (docs/RUNBOOK.md, "Incidents et regles"):
 
     fill rate > 0 on mapped columns   the Statut_Activite mapping typo
     business_id unique in the view    the non-deterministic DISTINCT ON

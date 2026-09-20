@@ -4,7 +4,7 @@ M6-S3 — Search sweep per unreachable éleveur (wrap of m3ag_s3)
 Thin wrapper over `m3ag_s3_search` pointed at the éleveurs tree. Same
 gates (geo per result, name token, snippet phones = corroboration only).
 Quota shared account-wide (`search_quota.json`): ddgs 300/day, Tavily
-1,000/month. The daily-drip V3 lever listed in docs/m6_progress.md.
+1,000/month. The daily-drip V3 lever (docs/RUNBOOK.md, M6).
 
 Usage:
     python scripts/m6_s3_search.py --departement 63 --backend ddgs --pilot 10

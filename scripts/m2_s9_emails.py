@@ -30,7 +30,7 @@ scored:
 French sites are legally required to publish their SIRET in the mentions
 légales, which is exactly what makes this test cheap and strong here.
 
-Three guards, each born from a real near-miss (see docs/m2_progress.md),
+Three guards, each born from a real near-miss (see docs/RUNBOOK.md, "Incidents et regles"),
 now applied to phones as well as e-mails:
   * >12 addresses (or phones) on one domain = a chain's store list, not a
     contact page — sophie-lebreuilly.com yielded 94 mailboxes for other

@@ -5,7 +5,7 @@ Fills a contact name for the deliverable businesses that have NO SIREN, so S9-1
 could never reach them: the `dirigeants` array is fetched by SIREN, and 21,941
 live businesses do not have one. Their only name is the source `trade_name`.
 
-MEASURED FIRST, THEN SCOPED (docs/m1_s9_progress.md, entry "S9-2")
+MEASURED FIRST, THEN SCOPED (step S9-2, 2026-08-02)
     The plan doc assumed "for sole traders the legal name often IS the person's
     name". For THIS population that is true of a minority: most of the 21,941
     are farm or brand names (FERME DE LA TONNELLERIE, Vente a la ferme,

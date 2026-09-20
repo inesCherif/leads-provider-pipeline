@@ -12,11 +12,10 @@ Providers implemented (key in .env, first configured one wins):
     REOON_API_KEY            emailverifier.reoon.com — 600 free/month +
                              100 instant credits, NO credit card at signup.
                              This is the recommended one; Reoon was already
-                             short-listed in implementation_plan_leads.md.
+                             short-listed in the original project plan.
     MILLIONVERIFIER_API_KEY  millionverifier.com — 10,000 free credits, but
-                             signup asked for a VAT number in 2026-08 (see
-                             docs/rapport_sam_2026-08-03.md) — the company
-                             has one, so this is Ines/CEO's call.
+                             signup asked for a VAT number in 2026-08 —
+                             the company has one: a company decision.
 
 THE GATE THAT MUST RUN FIRST (--pilot): before the provider is trusted with
 addresses we cannot check, it is tested on 20 addresses we CAN check — a

@@ -6,7 +6,7 @@ crawler and per-(operator, domain) validation; `score_fn` stays
 `agri_score` (the validator only needs "is this a farm's own page").
 Targets = websites on `matched_<dept>.csv` (PJ, OSM, BAF, Agence Bio,
 provider, DB claims, and since 2026-09-11 the M7 directories) plus
-`search_hits.csv` (m6_s3). The V3 lever listed in docs/m6_progress.md.
+`search_hits.csv` (m6_s3). The V3 lever (docs/RUNBOOK.md, M6).
 
 Usage:
     python scripts/m6_s4_crawl.py --departement 63 --pilot 10

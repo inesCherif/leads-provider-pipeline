@@ -372,7 +372,7 @@ def main() -> None:
         rate = found / len(todo) if todo else 0
         log.info(f"PILOT hit-rate {rate:.0%} — the project's go/no-go is 30%.")
         if rate < 0.30:
-            log.info("BELOW THRESHOLD. Record the number in docs/m2_progress.md "
+            log.info("BELOW THRESHOLD. Record the number in docs/RUNBOOK.md "
                      "and close this source. Do NOT 'fix' it by logging in.")
 
 

@@ -1,5 +1,10 @@
 # M4 — Multi-sector ingestion into Supabase (5 new provider files + boulangerie V15 + agriculteurs bio 63/03)
 
+> **Note (handover, 2026-09-20).** This is a reference document kept as it was written.
+> It sometimes cites working notes that are not part of this repository (per-sector work
+> logs `*_progress.md`, `implementation_plan_leads.md`, session handoffs). The current
+> commands are in `docs/RUNBOOK.md`; the rules and conventions in `CLAUDE.md`.
+
 ## Context
 
 Mehdi dropped 5 new Excel files into `Data Globale 05 juillet 2026/` on 2026-09-07 and wants them

@@ -387,7 +387,7 @@ def classify(*, reached: bool, text: str, own: str, shared: bool,
              communes: frozenset = frozenset(), has_shop_page: bool = False,
              blocked: bool = False, score_fn=None) -> tuple:
     """(verdict, reason) for one (SIRET, domain) pair. See the taxonomy in
-    docs/m2_progress.md; `valide`/`non_verifiable` ship, everything else is
+    docs/RUNBOOK.md; `valide`/`non_verifiable` ship, everything else is
     deleted from the deliverable.
 
     ORDER IS THE WHOLE DESIGN, and the first pilot proved it twice:

@@ -10,7 +10,7 @@ what a paid verifier does internally, and all of it is free:
     4. SMTP RCPT TO  ask the server if the mailbox exists (needs port 25)
 
 MEASURED ON THIS DATA before building (150 addresses / 87 domains, see
-`docs/m1_s9_progress.md`): about 24% get a definitive verdict.
+the S9-G run of 2026-08-02): about 24% get a definitive verdict.
 
     gmail.com                WORKS      5,611 addresses, 21% of the base
     orange.fr / wanadoo.fr   550 on CONNECT   <- our IP is refused outright

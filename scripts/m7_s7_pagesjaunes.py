@@ -13,7 +13,7 @@ reported at the end: only those need the commune-by-commune run
 
 Only 7 slugs were ever harvested in this repo (agriculteurs, eleveurs,
 elevages, maraichers, producteurs-de-fruits-et-legumes, apiculteurs,
-fromagers — see docs/m7_progress.md, V2 entry). The trades of the M7
+fromagers — M7 V2, 2026-09-11). The trades of the M7
 sub-segments were never opened; PJ prints a phone on 100 % of its cards.
 No alcohol / pork slug is in the list (the principle); every listing is
 still re-tested by `m7_lib.listing_excluded` in m7_s8.

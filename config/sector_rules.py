@@ -129,7 +129,7 @@ _AGRI = {
     # naf_label 'eleveur'). Reviewed and deliberately NOT auto-excluded: 10 of them
     # are tier-1 farms whose names merely contain an animal word (SEBASTIEN CHAT is
     # 01.41Z dairy — CHAT is the surname), and no lexical rule separates
-    # 'FERME DU CHAT BLANC' from 'AU CHIEN BLEU'. See docs/m1_s9_progress.md.
+    # 'FERME DU CHAT BLANC' from 'AU CHIEN BLEU'. See docs/RUNBOOK.md, "Incidents et regles".
     "exclude": (
         r"\y(chien|chiens|chat|chats|chaton|chatons|chiot|chiots|"
         r"oiseau|oiseaux|volatile|perroquet|canari|"
